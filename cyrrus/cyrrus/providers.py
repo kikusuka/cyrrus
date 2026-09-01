@@ -70,7 +70,7 @@ def openai(model: str = "gpt-4o-mini", api_key: str = None, base_url: str = None
     return _call
 
 
-def anthropic(model: str = "claude-haiku-4-5", api_key: str = None) -> callable:
+def anthropic(model: str = "claude-haiku-4-5", api_key: str = None, max_tokens: int = 1024) -> callable:
     """
     Anthropic Claude.
     Requires: pip install anthropic
@@ -94,7 +94,7 @@ def anthropic(model: str = "claude-haiku-4-5", api_key: str = None) -> callable:
             else:
                 filtered.append(m)
 
-        kwargs = {"model": model, "max_tokens": 1024, "messages": filtered}
+        kwargs = {"model": model, "max_tokens": max_tokens, "messages": filtered}
         if system:
             kwargs["system"] = system
 

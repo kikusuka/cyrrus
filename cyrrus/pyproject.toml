@@ -15,8 +15,8 @@ dependencies = []
 embeddings = ["fastembed", "numpy"]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/slid3s"
-Issues = "https://github.com/yourusername/slid3s/issues"
+Homepage = "https://github.com/kikusuka/cyrrus"
+Issues = "https://github.com/kikusuka/cyrrus/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

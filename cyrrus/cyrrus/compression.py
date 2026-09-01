@@ -15,7 +15,7 @@ Testable in two layers, on purpose:
 import logging
 import re
 
-log = logging.getLogger("slides.compression")
+log = logging.getLogger("cyrrus.compression")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 

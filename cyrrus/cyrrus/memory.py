@@ -5,7 +5,7 @@ import sqlite3
 import time
 from .data import Slide
 
-log = logging.getLogger("slides.memory")
+log = logging.getLogger("cyrrus.memory")
 
 
 class MemoryVault:
@@ -15,7 +15,7 @@ class MemoryVault:
 
     Retrieval has two modes:
     - Semantic (default when embeddings are available): understands meaning,
-      so "what am I working on" finds a fact stored as "user_project: slid3s".
+      so "what am I working on" finds a fact stored as "user_project: cyrrus".
     - Keyword fallback: word overlap scoring, used when fastembed isn't installed.
 
     Pass an embedder to use semantic retrieval without loading a second model:
@@ -62,7 +62,7 @@ class MemoryVault:
             log.info("MemoryVault: semantic retrieval enabled (%s).", model_name)
         except ImportError:
             log.info("fastembed not installed — using keyword retrieval. "
-                     "Install with: pip install slid3s[embeddings]")
+                     "Install with: pip install cyrrus[embeddings]")
         except Exception as e:
             log.warning("Embedding model failed to load (%s) — using keyword retrieval.", e)
 
@@ -153,7 +153,7 @@ class MemoryVault:
     async def _semantic_retrieve(self, rows: list, user_input: str, limit: int) -> list:
         try:
             # Embed each fact as "key: value" so the model understands context.
-            # "user_project: slid3s library" embeds much better than just "slid3s library".
+            # "user_project: cyrrus library" embeds much better than just "cyrrus library".
             fact_texts = [
                 f"{kw.replace('_', ' ')}: {val}" if val else kw.replace("_", " ")
                 for kw, val, _ in rows
@@ -224,3 +224,30 @@ class MemoryVault:
                     [(now, session_id, kw) for kw in keywords],
                 )
         await asyncio.to_thread(_write)
+
+    async def delete_session(self, session_id: str) -> int:
+        """
+        Delete all facts for a given session. Useful for GDPR compliance
+        (right to be forgotten) and session cleanup.
+
+        Returns the number of facts deleted.
+        """
+        def _write():
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.execute(
+                        "DELETE FROM facts WHERE session_id=?",
+                        (session_id,)
+                    )
+                    return cursor.rowcount
+            except sqlite3.OperationalError:
+                # DB was deleted or corrupted — recreate and retry once.
+                self._init_db()
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.execute(
+                        "DELETE FROM facts WHERE session_id=?",
+                        (session_id,)
+                    )
+                    return cursor.rowcount
+
+        return await asyncio.to_thread(_write)

@@ -14,7 +14,7 @@ from .config_validation import validate_config
 from .extractor import extract_facts
 from .data import Slide
 
-log = logging.getLogger("slides.projector")
+log = logging.getLogger("cyrrus.projector")
 
 
 class Projector:
@@ -62,6 +62,7 @@ class Projector:
         memory: object = None,
         knapsack: object = None,
         tray_factory: callable = None,
+        tool_executor_timeout: float = 5.0,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -81,6 +82,7 @@ class Projector:
         self.max_active_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
         self.timeout = timeout
+        self.tool_executor_timeout = tool_executor_timeout
         self.tray_factory = tray_factory
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
@@ -155,6 +157,11 @@ class Projector:
         conversation history. In a Discord bot: session_id=str(message.author.id).
         In a web app: session_id=user_id or session token.
         """
+        if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
+            raise ValueError(
+                "session_id cannot be None or empty. Pass a unique identifier per user "
+                "(e.g., str(user_id) for a web app, str(message.author.id) for Discord)."
+            )
         if session_id == "default":
             log.warning(
                 "process() called with session_id='default'. In a multi-user bot "
@@ -274,7 +281,7 @@ class Projector:
                 try:
                     raw = await asyncio.wait_for(
                         self.tool_executors[slide.handler](user_input),
-                        timeout=5,
+                        timeout=self.tool_executor_timeout,
                     )
                     result = await self._prepare_tool_result(slide, raw, user_input)
                     tool_results.append(

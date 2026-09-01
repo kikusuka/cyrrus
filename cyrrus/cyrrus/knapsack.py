@@ -1,6 +1,6 @@
 import logging
 
-log = logging.getLogger("slides.knapsack")
+log = logging.getLogger("cyrrus.knapsack")
 
 
 class TokenKnapsack:

@@ -73,7 +73,7 @@ from .data import Slide
 from .negation import is_negated
 from .router import IntentRouter
 
-log = logging.getLogger("slides.embedding_router")
+log = logging.getLogger("cyrrus.embedding_router")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"  # ONNX via fastembed, no PyTorch
 

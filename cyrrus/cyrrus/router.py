@@ -3,7 +3,7 @@ import logging
 from .data import Slide
 from .negation import is_negated
 
-log = logging.getLogger("slides.router")
+log = logging.getLogger("cyrrus.router")
 
 
 class IntentRouter:
@@ -13,7 +13,7 @@ class IntentRouter:
 
     The `examples` field in slide config is meaningful here too: if a slide
     has examples but no triggers, it won't match via keywords. Install
-    slid3s[embeddings] and use EmbeddingRouter to match against examples
+    cyrrus[embeddings] and use EmbeddingRouter to match against examples
     semantically. IntentRouter focuses on what it can do reliably: exact
     trigger word matching.
     """
