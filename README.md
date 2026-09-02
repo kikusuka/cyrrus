@@ -255,3 +255,4 @@ AGPLv3. If you run cyrrus as part of a network service, your modifications need 
 **cyrrus** — formerly slid3s — is the first library in the [Breezy](#) ecosystem.
 
 </div>
+💬 **[Join the Discord](https://discord.gg/fnCk8AYwVY)** — real-time updates, talk to other devs building on cyrrus, or just hang out.
