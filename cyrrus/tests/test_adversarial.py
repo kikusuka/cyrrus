@@ -1,13 +1,13 @@
 """
-Adversarial test for slid3s.
+Adversarial test for cyrrus.
 
-This test actively tries to break slid3s. Not edge cases — deliberate
-attacks on every component. If slid3s survives this, it's genuinely robust.
+This test actively tries to break cyrrus. Not edge cases — deliberate
+attacks on every component. If cyrrus survives this, it's genuinely robust.
 
 Designed to also run in Google Colab. If you're in Colab:
 
-    !pip install slid3s -q
-    !wget -q https://raw.githubusercontent.com/yourusername/slid3s/main/tests/test_adversarial.py
+    !pip install cyrrus -q
+    !wget -q https://raw.githubusercontent.com/kikusuka/cyrrus/main/tests/test_adversarial.py
     !python test_adversarial.py
 
 Or paste the whole file into a cell and run it.
@@ -442,7 +442,7 @@ async def test_extractor_attacks():
         ("my name is Muratha", "user_name", "Muratha"),
         ("I'm an indie developer", "user_job", "indie developer"),
         ("I live in Hyderabad", "user_location", "Hyderabad"),
-        ("I'm building slid3s", "user_project", "slid3s"),
+        ("I'm building cyrrus", "user_project", "cyrrus"),
         ("I work at Google", "user_workplace", "Google"),
         ("I prefer Ollama for local models", "user_preference", "Ollama for local models"),
     ]
@@ -458,7 +458,7 @@ async def test_extractor_attacks():
 
 async def main():
     print("=" * 60)
-    print("slid3s ADVERSARIAL TEST")
+    print("cyrrus ADVERSARIAL TEST")
     print("Deliberately trying to break everything.")
     print("=" * 60)
     print()
@@ -493,7 +493,7 @@ async def main():
         if WARNED:
             print(f"{len(WARNED)} known limitations documented above.")
         print()
-        print("slid3s is genuinely robust.")
+        print("cyrrus is genuinely robust.")
 
 
 if __name__ == "__main__":

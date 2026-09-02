@@ -59,7 +59,7 @@ _PATTERNS = [
     (r"i(?:'m| am) (?:from|in|based in)\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
     (r"i live in\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
 
-    # Project — stops at comma so "slid3s, a library" extracts just "slid3s"
+    # Project — stops at comma so "cyrrus, a library" extracts just "cyrrus"
     (r"i(?:'m| am) (?:building|working on|making|developing|creating)\s+([^,\n]{3,60}?)(?:[.,!?]|$)", "user_project"),
     (r"my (?:project|app|bot|library|tool|startup) is (?:called |named )?([^.,!?\n]{2,40})", "user_project"),
 

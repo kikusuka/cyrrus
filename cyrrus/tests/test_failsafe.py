@@ -1,12 +1,12 @@
 """
-Failsafe and survival test for slid3s.
+Failsafe and survival test for cyrrus.
 
 This tests three distinct things:
 
-  1. SURVIVAL — does slid3s crash or return something usable under
+  1. SURVIVAL — does cyrrus crash or return something usable under
      every bad condition we could think of?
 
-  2. HONESTY — does slid3s actually deliver on its core claim?
+  2. HONESTY — does cyrrus actually deliver on its core claim?
      The claim is: 'send only relevant context to the LLM.'
      We test whether that's actually true, and where it isn't.
 
@@ -71,7 +71,7 @@ def make_bot(**kwargs):
 # ─── SECTION 1: INPUT SURVIVAL ────────────────────────────────────────────────
 
 async def test_input_survival():
-    print("\n[INPUT SURVIVAL] Nothing the user sends should crash slid3s.\n")
+    print("\n[INPUT SURVIVAL] Nothing the user sends should crash cyrrus.\n")
 
     cases = [
         ("empty string",        ""),
@@ -109,7 +109,7 @@ async def test_input_survival():
 # ─── SECTION 2: LLM FAILURE SURVIVAL ──────────────────────────────────────────
 
 async def test_llm_failure_survival():
-    print("\n[LLM FAILURE SURVIVAL] When the LLM fails, slid3s should fail cleanly.\n")
+    print("\n[LLM FAILURE SURVIVAL] When the LLM fails, cyrrus should fail cleanly.\n")
 
     # Total outage — LLM always fails
     async def always_fails(messages):
@@ -287,7 +287,7 @@ async def test_isolation():
 # ─── SECTION 5: HONESTY — DOES IT ACTUALLY WORK ───────────────────────────────
 
 async def test_honesty():
-    print("\n[HONESTY] Does slid3s actually deliver on its core claim?\n")
+    print("\n[HONESTY] Does cyrrus actually deliver on its core claim?\n")
     print("  Core claim: 'send only relevant context to the LLM, not everything.'\n")
 
     captured = []
@@ -388,7 +388,7 @@ async def test_extractor_honesty():
         ("my name is Muratha",           "user_name",    "Muratha"),
         ("I'm an indie developer",       "user_job",     "indie developer"),
         ("I live in Hyderabad",          "user_location","Hyderabad"),
-        ("I'm building slid3s",          "user_project", "slid3s"),
+        ("I'm building cyrrus",          "user_project", "cyrrus"),
         ("I work at Google",             "user_workplace","Google"),
     ]
 
@@ -425,7 +425,7 @@ async def test_extractor_honesty():
 
 async def main():
     print("=" * 60)
-    print("slid3s FAILSAFE + HONESTY TEST")
+    print("cyrrus FAILSAFE + HONESTY TEST")
     print("=" * 60)
     print()
     print("PASS = works correctly")
@@ -455,8 +455,8 @@ async def main():
         sys.exit(1)
     else:
         print(f"\nAll checks passed. {len(WARNED)} known limitations above.")
-        print("slid3s survives everything thrown at it.")
-        print("The WARNs are honest — they document what slid3s can't do yet.")
+        print("cyrrus survives everything thrown at it.")
+        print("The WARNs are honest — they document what cyrrus can't do yet.")
 
 
 if __name__ == "__main__":

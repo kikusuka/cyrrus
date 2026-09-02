@@ -87,7 +87,7 @@ bot = Projector(config, llm_call=ollama("llama3.2"))
 reply = await bot.process("write a sorting function", session_id=str(user_id))
 ```
 
-`tokens` and `priority` are optional — slid3s fills them in automatically.
+`tokens` and `priority` are optional — cyrrus fills them in automatically.
 
 ### Individual components
 
@@ -220,4 +220,4 @@ AGPLv3. If you run cyrrus as part of a network service, you must make your modif
 
 ---
 
-*formerly known as slid3s*
+cyrrus — formerly known as slid3s

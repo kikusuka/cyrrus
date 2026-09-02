@@ -1,5 +1,5 @@
 """
-slid3s — working example.
+cyrrus — working example.
 
 Requires Ollama running locally:
     ollama serve
@@ -35,7 +35,7 @@ bot = Projector(config, llm_call=ollama("llama3.2"))
 
 
 async def main():
-    print("slid3s example — type 'quit' to exit, 'trace' to see what was injected.\n")
+    print("cyrrus example — type 'quit' to exit, 'trace' to see what was injected.\n")
 
     while True:
         try:
