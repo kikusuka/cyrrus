@@ -14,6 +14,9 @@ dependencies = []
 [project.optional-dependencies]
 embeddings = ["fastembed", "numpy"]
 
+[project.scripts]
+cyrrus = "cyrrus.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/kikusuka/cyrrus"
 Issues = "https://github.com/kikusuka/cyrrus/issues"

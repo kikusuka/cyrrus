@@ -71,17 +71,60 @@ class MemoryVault:
             # WAL mode cuts concurrent read latency significantly.
             # Without it, 300 concurrent users hit ~1.4s median / 5s worst-case.
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS facts (
-                    session_id    TEXT NOT NULL,
-                    keyword       TEXT NOT NULL,
-                    value         TEXT,
-                    tokens        INTEGER,
-                    last_accessed REAL,
-                    PRIMARY KEY (session_id, keyword)
-                )
-            """)
+            
+            # Check if table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='facts'"
+            )
+            table_exists = cursor.fetchone() is not None
+            
+            if table_exists:
+                # Check if we need to migrate from old schema (without temporal columns)
+                cursor = conn.execute("PRAGMA table_info(facts)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if "valid_at" not in columns:
+                    # Old schema - migrate to new temporal schema
+                    log.info("Migrating facts table to temporal schema...")
+                    conn.execute("""
+                        CREATE TABLE facts_new (
+                            rowid         INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id    TEXT NOT NULL,
+                            keyword       TEXT NOT NULL,
+                            value         TEXT,
+                            tokens        INTEGER,
+                            last_accessed REAL,
+                            valid_at      TEXT NOT NULL,
+                            invalid_at    TEXT
+                        )
+                    """)
+                    # Migrate existing data
+                    import datetime
+                    now = datetime.datetime.now().isoformat()
+                    conn.execute("""
+                        INSERT INTO facts_new (session_id, keyword, value, tokens, last_accessed, valid_at)
+                        SELECT session_id, keyword, value, tokens, last_accessed, ?
+                        FROM facts
+                    """, (now,))
+                    conn.execute("DROP TABLE facts")
+                    conn.execute("ALTER TABLE facts_new RENAME TO facts")
+            else:
+                # New database - create with temporal schema
+                conn.execute("""
+                    CREATE TABLE facts (
+                        rowid         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id    TEXT NOT NULL,
+                        keyword       TEXT NOT NULL,
+                        value         TEXT,
+                        tokens        INTEGER,
+                        last_accessed REAL,
+                        valid_at      TEXT NOT NULL,
+                        invalid_at    TEXT
+                    )
+                """)
+            
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON facts(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_current ON facts(session_id, invalid_at) WHERE invalid_at IS NULL")
 
     async def upsert(self, session_id: str, keyword: str, value: str, tokens: int):
         if value and len(value) > self.max_fact_value_length:
@@ -95,27 +138,64 @@ class MemoryVault:
         def _write():
             try:
                 with sqlite3.connect(self.db_path) as conn:
+                    # Check if there's a current fact for this (session_id, keyword)
+                    current = conn.execute(
+                        "SELECT rowid FROM facts WHERE session_id=? AND keyword=? AND invalid_at IS NULL",
+                        (session_id, keyword)
+                    ).fetchone()
+                    
+                    # Use a more precise timestamp to avoid collisions
+                    import datetime
+                    now = datetime.datetime.now().isoformat()
+                    
+                    if current:
+                        # Invalidate the old fact
+                        conn.execute(
+                            "UPDATE facts SET invalid_at=? WHERE rowid=?",
+                            (now, current[0])
+                        )
+                    
+                    # Insert the new fact as current
                     conn.execute(
-                        "INSERT OR REPLACE INTO facts VALUES (?,?,?,?,?)",
-                        (session_id, keyword, value, tokens, time.time()),
+                        "INSERT INTO facts (session_id, keyword, value, tokens, last_accessed, valid_at) VALUES (?,?,?,?,?,?)",
+                        (session_id, keyword, value, tokens, time.time(), now),
                     )
+                    
+                    # Count current facts only (invalid_at IS NULL) for overflow check
                     count = conn.execute(
-                        "SELECT COUNT(*) FROM facts WHERE session_id=?", (session_id,)
+                        "SELECT COUNT(*) FROM facts WHERE session_id=? AND invalid_at IS NULL", 
+                        (session_id,)
                     ).fetchone()[0]
                     if count > self.max_facts_per_session:
                         overflow = count - self.max_facts_per_session
                         conn.execute("""
                             DELETE FROM facts WHERE rowid IN (
-                                SELECT rowid FROM facts WHERE session_id=?
+                                SELECT rowid FROM facts WHERE session_id=? AND invalid_at IS NULL
                                 ORDER BY last_accessed ASC LIMIT ?
                             )
                         """, (session_id, overflow))
+                    
+                    # Also prune historical rows to prevent unbounded growth
+                    # Keep at most 3x max_facts_per_session total rows per session
+                    total_count = conn.execute(
+                        "SELECT COUNT(*) FROM facts WHERE session_id=?", 
+                        (session_id,)
+                    ).fetchone()[0]
+                    max_total = self.max_facts_per_session * 3
+                    if total_count > max_total:
+                        historical_overflow = total_count - max_total
+                        conn.execute("""
+                            DELETE FROM facts WHERE rowid IN (
+                                SELECT rowid FROM facts WHERE session_id=? AND invalid_at IS NOT NULL
+                                ORDER BY valid_at ASC LIMIT ?
+                            )
+                        """, (session_id, historical_overflow))
             except sqlite3.OperationalError:
                 # DB was deleted or corrupted mid-write — recreate and retry once.
                 self._init_db()
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute(
-                        "INSERT OR REPLACE INTO facts VALUES (?,?,?,?,?)",
+                        "INSERT INTO facts (session_id, keyword, value, tokens, last_accessed, valid_at) VALUES (?,?,?,?,?,datetime('now'))",
                         (session_id, keyword, value, tokens, time.time()),
                     )
 
@@ -125,9 +205,10 @@ class MemoryVault:
         def _read():
             try:
                 with sqlite3.connect(self.db_path) as conn:
+                    # Only retrieve current facts (invalid_at IS NULL) to avoid ghost memory
                     return conn.execute(
                         "SELECT keyword, value, tokens FROM facts "
-                        "WHERE session_id=? ORDER BY last_accessed DESC LIMIT 100",
+                        "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC LIMIT 100",
                         (session_id,),
                     ).fetchall()
             except sqlite3.OperationalError:
@@ -251,3 +332,34 @@ class MemoryVault:
                     return cursor.rowcount
 
         return await asyncio.to_thread(_write)
+
+    async def get_fact_history(self, session_id: str, keyword: str) -> list:
+        """
+        Retrieve the full timeline of a fact for a given (session_id, keyword) pair.
+        Returns all versions ordered by valid_at, including both current and superseded facts.
+        
+        Returns a list of dicts with keys: value, tokens, valid_at, invalid_at
+        """
+        def _read():
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT value, tokens, valid_at, invalid_at FROM facts "
+                        "WHERE session_id=? AND keyword=? ORDER BY valid_at ASC",
+                        (session_id, keyword)
+                    ).fetchall()
+                    return [
+                        {
+                            "value": row[0],
+                            "tokens": row[1],
+                            "valid_at": row[2],
+                            "invalid_at": row[3],
+                        }
+                        for row in rows
+                    ]
+            except sqlite3.OperationalError:
+                # DB was deleted or corrupted — recreate and return empty.
+                self._init_db()
+                return []
+
+        return await asyncio.to_thread(_read)
