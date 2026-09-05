@@ -125,6 +125,40 @@ reply = await bot.process("write a sorting function", session_id=str(user_id))
 
 Only `content` is required. `tokens` and `priority` fill in automatically.
 
+### Streaming with `aprocess_stream`
+
+Use `process()` when you want one full string back. Use `aprocess_stream()` when you want tokens as they arrive:
+
+```python
+async for chunk in bot.aprocess_stream(
+    "write a short python function",
+    session_id="user_42",
+):
+    print(chunk, end="", flush=True)
+```
+
+If the stream finishes normally, cyrrus saves the turn to history and extracts facts in the background. If the stream is cancelled mid-response, partial output is not saved to conversation history.
+
+### CLI: `cyrrus init`
+
+`cyrrus` ships with a non-coder setup wizard that generates a `slides.json` config:
+
+```bash
+cyrrus init
+```
+
+You can also run non-interactive mode:
+
+```bash
+cyrrus init --template coding --tone professional --yes
+```
+
+On Windows, if your Python Scripts folder is not on `PATH`, run:
+
+```bash
+python -m cyrrus.cli init
+```
+
 ### Any provider
 ```python
 from cyrrus.providers import ollama, openai, anthropic, groq
@@ -173,6 +207,10 @@ message
  response
 ```
 
+### Stable token savings in long conversations
+
+cyrrus now keeps history compression stable over long chats with a bounded "Previously mentioned:" block for older turns. Savings stay in the 64-80% range even past 100 messages, instead of decaying (an older bug could drift down to ~26% by message 11).
+
 ---
 
 ## Memory that just works
@@ -185,7 +223,20 @@ No setup. The default extractor runs automatically and picks up common patterns:
 "I prefer Ollama"             →  user_preference = Ollama
 ```
 
-With `cyrrus[embeddings]` installed, retrieval understands meaning, not just keyword overlap — "what am I working on" correctly finds a fact stored as `user_project`. Without it, keyword matching still catches most direct questions, zero dependencies required.
+Fact extraction now has three tiers:
+
+- **Regex (default):** zero dependencies, fast, and predictable.
+- **ONNX (`cyrrus[facts-onnx]`):** better recall on natural phrasing without pulling in full torch.
+- **Torch (`cyrrus[facts-torch]`):** highest recall/accuracy, biggest install footprint.
+
+Install examples:
+
+```bash
+pip install cyrrus[facts-onnx]
+pip install cyrrus[facts-torch]
+```
+
+Retrieval is separate from extraction. With `cyrrus[embeddings]` installed, retrieval understands meaning, not just keyword overlap — "what am I working on" correctly finds a fact stored as `user_project`. Without it, keyword matching still catches most direct questions, zero dependencies required.
 
 ---
 

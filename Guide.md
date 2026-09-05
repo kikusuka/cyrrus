@@ -7,18 +7,21 @@
 ## Table of contents
 
 1. [The five-minute start](#the-five-minute-start)
-2. [Understanding slides](#understanding-slides)
-3. [Writing good triggers](#writing-good-triggers)
-4. [The ghost decay model, explained properly](#the-ghost-decay-model-explained-properly)
-5. [Memory — how it learns about your users](#memory--how-it-learns-about-your-users)
-6. [Tools — giving your bot capabilities](#tools--giving-your-bot-capabilities)
-7. [Token budgets and priority](#token-budgets-and-priority)
-8. [session_id — the thing you must not skip](#session_id--the-thing-you-must-not-skip)
-9. [Choosing a provider](#choosing-a-provider)
-10. [Debugging with traces](#debugging-with-traces)
-11. [When to use semantic routing](#when-to-use-semantic-routing)
-12. [Common mistakes](#common-mistakes)
-13. [Production checklist](#production-checklist)
+2. [CLI Quickstart](#cli-quickstart)
+3. [Streaming](#streaming)
+4. [Understanding slides](#understanding-slides)
+5. [Writing good triggers](#writing-good-triggers)
+6. [The ghost decay model, explained properly](#the-ghost-decay-model-explained-properly)
+7. [Memory — how it learns about your users](#memory--how-it-learns-about-your-users)
+8. [Choosing a Fact Extraction Tier](#choosing-a-fact-extraction-tier)
+9. [Tools — giving your bot capabilities](#tools--giving-your-bot-capabilities)
+10. [Token budgets and priority](#token-budgets-and-priority)
+11. [session_id — the thing you must not skip](#session_id--the-thing-you-must-not-skip)
+12. [Choosing a provider](#choosing-a-provider)
+13. [Debugging with traces](#debugging-with-traces)
+14. [When to use semantic routing](#when-to-use-semantic-routing)
+15. [Common mistakes](#common-mistakes)
+16. [Production checklist](#production-checklist)
 
 ---
 
@@ -56,6 +59,45 @@ bot = Projector.minimal(
 ```
 
 That's genuinely as far as you need to go for a lot of use cases. Everything past this point is for when you want more control.
+
+---
+
+## CLI Quickstart
+
+If you'd rather not hand-write config, use the built-in wizard:
+
+```bash
+cyrrus init
+```
+
+For scripted setup:
+
+```bash
+cyrrus init --template coding --tone professional --yes
+```
+
+On Windows, if `cyrrus` isn't recognized because the Scripts folder is not on `PATH`, run:
+
+```bash
+python -m cyrrus.cli init
+```
+
+---
+
+## Streaming
+
+Use `process()` when you want a single final string. Use `aprocess_stream()` when you want to render output token-by-token in a live UI, terminal, or chat bridge.
+
+```python
+async for chunk in bot.aprocess_stream("Draft release notes", session_id="u1"):
+    print(chunk, end="", flush=True)
+```
+
+Behavior differences vs `process()`:
+
+- `process()` returns one completed response and always records that completed turn.
+- `aprocess_stream()` yields pieces as they arrive, then finalizes post-processing when streaming completes.
+- If a stream is cancelled or errors mid-flight, the partial assistant response is **not** saved to conversation history, and fact extraction for that turn is skipped.
 
 ---
 
@@ -233,6 +275,12 @@ User asks: "what's my name?"
 
 Memory is strictly isolated by `session_id`. This is tested — 500 concurrent sessions, zero cross-contamination, confirmed under adversarial load.
 
+### Temporal Memory
+
+Facts now version over time instead of overwriting old values. When a key changes, cyrrus marks the previous value as invalid and stores the new one as the current value.
+
+If you need the timeline for one fact, use `get_fact_history(session_id, keyword)` on `MemoryVault` to retrieve all versions in chronological order (current + superseded).
+
 ### Bringing your own extractor
 
 If the built-in heuristics don't fit your domain, replace it entirely:
@@ -259,6 +307,18 @@ await bot.memory.delete_session("user_123")
 ```
 
 Useful for GDPR-style deletion requests, or just letting a user reset their history.
+
+---
+
+## Choosing a Fact Extraction Tier
+
+cyrrus supports three extraction tiers:
+
+- **Regex (default):** zero dependencies, fastest startup, most predictable behavior. Best default when you want minimal footprint.
+- **ONNX tier (`pip install cyrrus[facts-onnx]`):** improved recall for natural phrasing with a moderate dependency footprint. Good middle ground.
+- **Torch tier (`pip install cyrrus[facts-torch]`):** highest extraction quality on varied language, but largest install/runtime footprint.
+
+Rule of thumb: start with regex, move to ONNX when misses become visible in production phrasing, and use torch when extraction quality matters more than package size and startup cost.
 
 ---
 
