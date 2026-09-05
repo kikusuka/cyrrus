@@ -4,7 +4,11 @@ from .memory import MemoryVault
 from .router import IntentRouter
 from .tray import SlideTray
 from .knapsack import TokenKnapsack
-from .extractor import extract_facts
+from .extractor import (
+    configure_fact_extractor,
+    extract_facts,
+    get_fact_extractor_tier,
+)
 from . import providers
 
 __version__ = "0.1.0"
@@ -21,6 +25,8 @@ __all__ = [
     "SlideTray",
     "TokenKnapsack",
     "extract_facts",
+    "configure_fact_extractor",
+    "get_fact_extractor_tier",
     "providers",
     "estimate_tokens",
     "__version__",
