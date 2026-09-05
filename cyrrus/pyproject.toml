@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cyrrus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Context routing for LLM calls. Decides what goes into the prompt so you don't have to send everything every time."
 readme = "README.md"
 requires-python = ">=3.9"

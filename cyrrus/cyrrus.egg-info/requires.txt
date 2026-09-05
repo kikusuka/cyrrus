@@ -2,3 +2,11 @@
 [embeddings]
 fastembed
 numpy
+
+[facts-onnx]
+onnxruntime>=1.16.0
+gliner2-onnx>=0.1.0
+numpy
+
+[facts-torch]
+gliner>=0.2.5

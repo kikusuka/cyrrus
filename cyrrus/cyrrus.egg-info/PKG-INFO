@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: cyrrus
-Version: 0.1.0
+Version: 0.2.0
 Summary: Context routing for LLM calls. Decides what goes into the prompt so you don't have to send everything every time.
 License: AGPL-3.0
 Project-URL: Homepage, https://github.com/kikusuka/cyrrus
@@ -10,6 +10,12 @@ Description-Content-Type: text/markdown
 Provides-Extra: embeddings
 Requires-Dist: fastembed; extra == "embeddings"
 Requires-Dist: numpy; extra == "embeddings"
+Provides-Extra: facts-onnx
+Requires-Dist: onnxruntime>=1.16.0; extra == "facts-onnx"
+Requires-Dist: gliner2-onnx>=0.1.0; extra == "facts-onnx"
+Requires-Dist: numpy; extra == "facts-onnx"
+Provides-Extra: facts-torch
+Requires-Dist: gliner>=0.2.5; extra == "facts-torch"
 
 # cyrrus
 
