@@ -9,6 +9,7 @@ from .extractor import (
     extract_facts,
     get_fact_extractor_tier,
 )
+from .providers import StreamChunk
 from . import providers
 
 __version__ = "0.1.0"
@@ -27,6 +28,7 @@ __all__ = [
     "extract_facts",
     "configure_fact_extractor",
     "get_fact_extractor_tier",
+    "StreamChunk",
     "providers",
     "estimate_tokens",
     "__version__",

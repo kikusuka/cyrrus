@@ -1,10 +1,14 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque, OrderedDict
+from collections.abc import AsyncIterator
 from dataclasses import replace
+from difflib import SequenceMatcher
 from typing import Optional
+from weakref import WeakValueDictionary
 
 from .router import IntentRouter
 from .memory import MemoryVault
@@ -13,8 +17,148 @@ from .knapsack import TokenKnapsack
 from .config_validation import validate_config
 from .extractor import extract_facts
 from .data import Slide
+from .providers import StreamChunk
 
 log = logging.getLogger("cyrrus.projector")
+
+
+class SessionLocks:
+    """
+    Per-session locking using WeakValueDictionary to avoid memory leaks.
+    Uses a meta-lock to guard lock creation, ensuring thread-safe lock instantiation.
+    """
+    
+    def __init__(self):
+        self._locks = WeakValueDictionary()
+        self._meta = asyncio.Lock()
+    
+    async def get(self, key: str) -> asyncio.Lock:
+        """
+        Get or create a lock for the given session key.
+        The meta-lock ensures only one lock is created per key even under concurrent access.
+        """
+        async with self._meta:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[key] = lock
+            return lock
+
+
+# Memory-relevant keywords for extraction (from Kimi's research)
+_MEMORY_KEYWORDS = {
+    "name", "prefer", "like", "want", "need", 
+    "always", "never", "don't", "should", "must"
+}
+
+
+def _extract_memory_sentences(text: str) -> list:
+    """
+    Extract sentences containing memory-relevant keywords.
+    Returns a list of sentences that contain any of the memory keywords.
+    """
+    if not text:
+        return []
+    
+    # Split into sentences using regex that handles sentence boundaries better
+    # This pattern splits on . ! or ? followed by whitespace or end of string
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    extracted = []
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        
+        # Check if sentence contains any memory keyword
+        words = set(sentence.lower().split())
+        if words & _MEMORY_KEYWORDS:
+            extracted.append(sentence)
+    
+    return extracted
+
+
+def _deduplicate_sentences(sentences: list, similarity_threshold: float = 0.7) -> list:
+    """
+    Deduplicate near-identical sentences using simple string similarity.
+    Returns a list of unique sentences.
+    Lower threshold (0.7) to avoid over-aggressive deduplication.
+    """
+    if not sentences:
+        return []
+    
+    unique = []
+    for sentence in sentences:
+        is_duplicate = False
+        for existing in unique:
+            # Use SequenceMatcher for similarity (no new dependencies)
+            similarity = SequenceMatcher(None, sentence.lower(), existing.lower()).ratio()
+            if similarity >= similarity_threshold:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            unique.append(sentence)
+    
+    return unique
+
+
+def _build_compact_history(history: deque, verbatim_turns: int) -> list:
+    """
+    Build history with recent turns verbatim and older turns compressed.
+    Keeps the last N turns verbatim, and extracts memory-relevant sentences
+    from older user messages only into a "Previously mentioned:" block.
+    Limits the block to prevent unbounded growth.
+    """
+    history_list = list(history)
+    if len(history_list) <= verbatim_turns * 2:
+        # Not enough history to compress, return as-is
+        return history_list
+    
+    # Split into verbatim (recent) and old (to compress)
+    # Each turn is 2 messages (user + assistant)
+    verbatim_cutoff = verbatim_turns * 2
+    old_messages = history_list[:-verbatim_cutoff]
+    verbatim_messages = history_list[-verbatim_cutoff:]
+    
+    # Extract memory-relevant sentences from old USER messages only
+    # This prevents assistant responses from polluting the extracted content
+    old_user_messages = [m["content"] for m in old_messages if m["role"] == "user"]
+    
+    # Extract sentences from each message individually to avoid re-extraction issues
+    all_extracted = []
+    for msg in old_user_messages:
+        extracted = _extract_memory_sentences(msg)
+        all_extracted.extend(extracted)
+    
+    # Deduplicate across all extracted sentences
+    deduped_sentences = _deduplicate_sentences(all_extracted)
+    
+    # Limit the "Previously mentioned:" block to prevent unbounded growth
+    # Keep at most 10 sentences to stay within ~100 tokens
+    max_sentences = 10
+    if len(deduped_sentences) > max_sentences:
+        # Keep the most recent sentences (they're more relevant)
+        deduped_sentences = deduped_sentences[-max_sentences:]
+    
+    # Build the compact history
+    compact_history = []
+    
+    # Add "Previously mentioned:" block if we have extracted sentences
+    if deduped_sentences:
+        previously_mentioned = "Previously mentioned: " + ". ".join(deduped_sentences) + "."
+        compact_history.append({"role": "system", "content": previously_mentioned})
+        
+        # Debug: log the cap being applied
+        if len(deduped_sentences) >= max_sentences:
+            log.debug(
+                "Capped 'Previously mentioned:' block to %d sentences (had %d extracted)",
+                max_sentences, len(deduped_sentences)
+            )
+    
+    # Add verbatim recent messages
+    compact_history.extend(verbatim_messages)
+    
+    return compact_history
 
 
 class Projector:
@@ -46,6 +190,7 @@ class Projector:
         llm_call: callable,
         max_context_tokens: int = 800,
         history_window: int = 10,
+        history_verbatim_turns: int = 5,
         tool_executors: dict = None,
         fact_extractor: callable = None,
         compress_tool_output: bool = False,
@@ -79,6 +224,7 @@ class Projector:
         self.trace_file = trace_file
         self.max_context_tokens = max_context_tokens
         self.history_window = history_window
+        self.history_verbatim_turns = history_verbatim_turns
         self.max_active_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
         self.timeout = timeout
@@ -86,6 +232,7 @@ class Projector:
         self.tray_factory = tray_factory
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
+        self._session_locks = SessionLocks()  # per-session locking for tray mutations
 
         if self.compress_tool_output and self.compressor is None:
             from .compression import ExtractiveCompressor
@@ -205,7 +352,101 @@ class Projector:
                 log.error("Fallback LLM call also failed for session %s: %s", session_id, llm_err)
                 raise
 
-    async def _process_inner(self, user_input: str, session_id: str, trace: dict):
+    async def aprocess_stream(
+        self, user_input: str, session_id: str = "default"
+    ) -> AsyncIterator[str]:
+        """
+        Same pipeline as process(), but yields response text as it arrives.
+
+        session_id rules match process(). After the stream finishes normally,
+        conversation history and fact extraction run. Cancel or error mid-stream
+        skips those, but still records whatever arrived in the trace log.
+        """
+        if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
+            raise ValueError(
+                "session_id cannot be None or empty. Pass a unique identifier per user "
+                "(e.g., str(user_id) for a web app, str(message.author.id) for Discord)."
+            )
+        if session_id == "default":
+            log.warning(
+                "aprocess_stream() called with session_id='default'. In a multi-user bot "
+                "every user needs a unique session_id or they will share memory. "
+                "Pass session_id=str(user_id) etc."
+            )
+
+        start = time.time()
+        trace = {
+            "session_id": session_id,
+            "user_input": user_input,
+            "timestamp": start,
+            "streamed": True,
+        }
+        history = None
+        completed = False
+        parts = []
+
+        try:
+            messages, history = await self._prepare_turn(user_input, session_id, trace)
+            async for piece in self._iter_llm_stream(messages):
+                parts.append(piece)
+                yield piece
+            completed = True
+        except asyncio.CancelledError:
+            trace["error"] = "CancelledError"
+            raise
+        except Exception as e:
+            log.error(
+                "Streaming pipeline failed for session %s: %s",
+                session_id, e, exc_info=True,
+            )
+            trace["error"] = repr(e)
+            raise
+        finally:
+            full = "".join(parts)
+            trace["response"] = full
+            trace["stream_complete"] = completed
+            trace["latency_s"] = round(time.time() - start, 4)
+            await asyncio.shield(
+                self._after_stream(
+                    user_input, session_id, history, full, completed, trace
+                )
+            )
+
+    async def _iter_llm_stream(self, messages: list) -> AsyncIterator[str]:
+        astream = getattr(self.llm_call, "astream", None)
+        if astream is None:
+            raise TypeError(
+                "llm_call has no astream() method. Use a cyrrus.providers wrapper "
+                "(ollama/openai/anthropic/groq) or attach an async generator "
+                "as llm_call.astream."
+            )
+        async for item in astream(messages):
+            if isinstance(item, StreamChunk):
+                if item.text:
+                    yield item.text
+            elif isinstance(item, str) and item:
+                yield item
+
+    async def _after_stream(
+        self,
+        user_input: str,
+        session_id: str,
+        history,
+        full: str,
+        completed: bool,
+        trace: dict,
+    ):
+        try:
+            if completed and history is not None:
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "assistant", "content": full})
+                if self.fact_extractor:
+                    await self._shadow_extract(user_input, session_id)
+        except Exception as e:
+            log.error("Stream post-processing failed: %s", e)
+        self._record_trace(trace)
+
+    async def _prepare_turn(self, user_input: str, session_id: str, trace: dict):
         tray = self._get_tray(session_id)
         history = self._get_history(session_id)
 
@@ -244,30 +485,33 @@ class Projector:
         packed_ids = {s.id for s in packed}
         trace["dropped_slide_ids"] = list(all_ids - packed_ids)
 
-        tray.update(packed)
+        # Wrap tray mutations in per-session lock to prevent race conditions
+        session_lock = await self._session_locks.get(session_id)
+        async with session_lock:
+            tray.update(packed)
 
-        routed_ids = {s.id for s in packed_routed}
-        all_tray = tray.all_slides()
-        guaranteed = [s for s in all_tray if s.id in routed_ids]
-        competing = [s for s in all_tray if s.id not in routed_ids]
+            routed_ids = {s.id for s in packed_routed}
+            all_tray = tray.all_slides()
+            guaranteed = [s for s in all_tray if s.id in routed_ids]
+            competing = [s for s in all_tray if s.id not in routed_ids]
 
-        remaining_for_competing = max(0, available - sum(s.tokens for s in guaranteed))
+            remaining_for_competing = max(0, available - sum(s.tokens for s in guaranteed))
 
-        def _deprioritize_ghost(s):
-            return replace(s, priority=max(0, s.priority - 1000)) if s.is_ghost else s
+            def _deprioritize_ghost(s):
+                return replace(s, priority=max(0, s.priority - 1000)) if s.is_ghost else s
 
-        competing_packed = self.knapsack.pack(
-            [_deprioritize_ghost(s) for s in competing],
-            remaining_for_competing,
-        )
-        competing_ids = {s.id for s in competing_packed}
-        final_slides = guaranteed + [s for s in competing if s.id in competing_ids]
+            competing_packed = self.knapsack.pack(
+                [_deprioritize_ghost(s) for s in competing],
+                remaining_for_competing,
+            )
+            competing_ids = {s.id for s in competing_packed}
+            final_slides = guaranteed + [s for s in competing if s.id in competing_ids]
 
-        evicted = {s.id for s in all_tray} - {s.id for s in final_slides}
-        if evicted:
-            tray.active = [s for s in tray.active if s.id not in evicted]
-            tray.ghosts = [s for s in tray.ghosts if s.id not in evicted]
-        trace["dropped_from_tray_over_budget"] = list(evicted)
+            evicted = {s.id for s in all_tray} - {s.id for s in final_slides}
+            if evicted:
+                tray.active = [s for s in tray.active if s.id not in evicted]
+                tray.ghosts = [s for s in tray.ghosts if s.id not in evicted]
+            trace["dropped_from_tray_over_budget"] = list(evicted)
 
         # Sort by id for prompt caching — byte-identical prefix when same
         # slides are selected lets the provider cache the system message.
@@ -324,13 +568,16 @@ class Projector:
         # Build the full messages array.
         # System message is rebuilt fresh each turn with current context.
         # History carries the actual conversation so follow-ups work.
+        # Use compact history to maintain token consistency over long conversations.
+        compact_history = _build_compact_history(history, self.history_verbatim_turns)
+        
         user_content = user_input
         if tool_results:
             user_content += "\n\n" + "\n\n".join(tool_results)
 
         messages = (
             [{"role": "system", "content": system_content}]
-            + list(history)
+            + compact_history
             + [{"role": "user", "content": user_content}]
         )
 
@@ -342,6 +589,10 @@ class Projector:
             "slides_ghost": len(tray.ghosts),
         }
         self.last_stats = trace["stats"]
+        return messages, history
+
+    async def _process_inner(self, user_input: str, session_id: str, trace: dict):
+        messages, history = await self._prepare_turn(user_input, session_id, trace)
 
         # Await the LLM directly — don't use create_task here.
         # create_task detaches the coroutine from the parent, which means
