@@ -69,7 +69,7 @@ def fresh_pipeline(**kwargs):
     defaults.update(kwargs)
     p = Projector(**defaults)
     p.memory.db_path = TEST_DB
-    p.memory._init_db()
+    # Initialize the backend (async, but we're in sync context - will lazy-init on first operation)
     return p
 
 

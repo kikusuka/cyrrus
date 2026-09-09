@@ -1,7 +1,9 @@
 import re
 import logging
+from typing import Dict, Set
 from .data import Slide
 from .negation import is_negated
+from .stemmer import PorterStemmer, normalize_token, SYNONYMS
 
 log = logging.getLogger("cyrrus.router")
 
@@ -21,7 +23,8 @@ class IntentRouter:
     def __init__(self, slides_config: dict, negation_aware: bool = True):
         self.slides = slides_config
         self.negation_aware = negation_aware
-        self._keyword_map = {}
+        self._keyword_map: Dict[str, Set[str]] = {}
+        self._stemmer = PorterStemmer()
         self._build_index()
 
     def _build_index(self):
@@ -29,7 +32,10 @@ class IntentRouter:
             if slide_id == "core_lamp" or slide_id.startswith("_"):
                 continue
             for trigger in data.get("triggers", []):
-                self._keyword_map.setdefault(trigger.lower(), []).append(slide_id)
+                # Normalize trigger: stem and add all synonym variants
+                normalized_forms = normalize_token(trigger, self._stemmer)
+                for form in normalized_forms:
+                    self._keyword_map.setdefault(form, set()).add(slide_id)
 
     def _make_slide(self, sid: str) -> Slide:
         data = self.slides[sid]
@@ -49,13 +55,22 @@ class IntentRouter:
         matched = set()
         negated = set()
 
-        for trigger, slide_ids in self._keyword_map.items():
-            for m in re.finditer(rf"\b{re.escape(trigger)}\b", lower):
-                for sid in slide_ids:
-                    if self.negation_aware and is_negated(lower, m.start()):
-                        negated.add(sid)
-                    else:
-                        matched.add(sid)
+        # Tokenize input and normalize each token
+        tokens = re.findall(r'\b\w+\b', lower)
+        
+        for token in tokens:
+            # Normalize token: stem and expand synonyms
+            normalized_forms = normalize_token(token, self._stemmer)
+            
+            for form in normalized_forms:
+                if form in self._keyword_map:
+                    for sid in self._keyword_map[form]:
+                        # Find the original match position for negation checking
+                        for m in re.finditer(rf"\b{re.escape(token)}\b", lower):
+                            if self.negation_aware and is_negated(lower, m.start()):
+                                negated.add(sid)
+                            else:
+                                matched.add(sid)
 
         slides = [self._make_slide(sid) for sid in matched]
         slides.sort(key=lambda s: s.priority, reverse=True)

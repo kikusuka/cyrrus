@@ -1,0 +1,36 @@
+
+=== Running: tests/test_edge_cases_simple.py (timeout=45s) ===
+  18 passed in 14.26s
+  Elapsed: 19.4s  Exit: 0
+
+=== Running: tests/test_adversarial.py (timeout=45s) ===
+  TIMEOUT after 45.1s — skipping (thread still alive)
+
+=== Running: tests/test_session_locks.py (timeout=45s) ===
+  5 passed in 22.46s
+  Elapsed: 24.4s  Exit: 0
+
+=== Running: tests/test_failsafe.py (timeout=45s) ===
+  TIMEOUT after 45.2s — skipping (thread still alive)
+
+=== Running: tests/test_token_consistency.py (timeout=45s) ===
+  5 passed in 8.49s
+  Elapsed: 9.4s  Exit: 0
+
+=== Running: tests/test_streaming.py (timeout=45s) ===
+  8 passed in 3.24s
+  Elapsed: 4.4s  Exit: 0
+
+=== Running: tests/test_cli.py (timeout=45s) ===
+  23 passed in 1.12s
+  Elapsed: 2.1s  Exit: 0
+
+=== Running: tests/test_embedding_router.py (timeout=45s) ===
+  7 passed in 12.45s
+  Elapsed: 13.9s  Exit: 0
+
+=== Running: tests/test_fact_extractor_tiers.py (timeout=45s) ===
+  15 passed in 2.25s
+  Elapsed: 6.6s  Exit: 0
+
+=== OVERALL EXIT (excluding timed-out ones): 0 ===

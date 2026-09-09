@@ -37,11 +37,19 @@ def check(name, condition, warning=False):
 
 
 def cleanup():
+    import time
     for ext in ["", "-wal", "-shm"]:
-        try:
-            os.remove(DB + ext)
-        except FileNotFoundError:
-            pass
+        for attempt in range(3):
+            try:
+                os.remove(DB + ext)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    pass  # Give up, will be cleaned up next run
 
 
 def base_config():

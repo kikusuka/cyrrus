@@ -26,10 +26,13 @@ tests/test_adversarial.py
 tests/test_cli.py
 tests/test_compression.py
 tests/test_config_validation.py
+tests/test_edge_cases_simple.py
 tests/test_embedding_router.py
 tests/test_fact_extractor_tiers.py
 tests/test_failsafe.py
+tests/test_session_locks.py
 tests/test_streaming.py
 tests/test_temporal_memory.py
 tests/test_threshold_calibration.py
+tests/test_token_consistency.py
 tests/test_v1.py
