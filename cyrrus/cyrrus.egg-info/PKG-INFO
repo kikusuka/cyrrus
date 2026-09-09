@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: cyrrus
-Version: 0.2.0
+Version: 0.3.0b1
 Summary: Context routing for LLM calls. Decides what goes into the prompt so you don't have to send everything every time.
 License: AGPL-3.0
 Project-URL: Homepage, https://github.com/kikusuka/cyrrus
