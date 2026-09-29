@@ -233,11 +233,10 @@ SYNONYMS: Dict[str, Set[str]] = {
     'deadline': {'duedate', 'cutoff', 'timelimit', 'target'},
     'agenda': {'schedule', 'plan', 'itinerary', 'program'},
     
-    # General utility (11 entries)
+    # General utility (10 entries)
     'want': {'need', 'desire', 'require', 'wish'},
     'need': {'want', 'require', 'desire', 'must'},
     'use': {'utilize', 'employ', 'apply', 'leverage'},
-    'make': {'create', 'build', 'construct', 'produce'},
     'get': {'obtain', 'acquire', 'retrieve', 'fetch'},
     'find': {'locate', 'discover', 'search', 'look'},
     'search': {'find', 'look', 'seek', 'query'},

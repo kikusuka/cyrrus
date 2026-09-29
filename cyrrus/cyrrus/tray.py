@@ -24,6 +24,7 @@ class SlideTray:
         self.active: List[Slide] = []
         self.ghosts: List[Slide] = []
         self.turn_counters: Dict[str, int] = {}
+        self.ghost_ages: Dict[str, int] = {}  # Track how many turns as ghost
         self.max_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
 
@@ -37,6 +38,8 @@ class SlideTray:
             self.turn_counters[s.id] = self.turn_counters.get(s.id, 0) + 1
             if self.turn_counters[s.id] > self._ttl(s):
                 self.ghosts.append(replace(s, is_ghost=True))
+                # Initialize ghost age when slide becomes a ghost
+                self.ghost_ages[s.id] = 0
             else:
                 surviving.append(s)
 
@@ -47,12 +50,31 @@ class SlideTray:
             # Reset counter for any slide routed this turn — active usage
             # means the TTL clock restarts, not continues ticking.
             self.turn_counters[s.id] = 0
+            # If slide was a ghost, it's now active again - clean up ghost state
+            if s.id in self.ghost_ages:
+                del self.ghost_ages[s.id]
 
         self.active = surviving
         # Clear any ghost that just got re-triggered — it's active again.
         active_ids = {s.id for s in self.active}
         retained = [s for s in self.ghosts if s.id not in active_ids]
-        self.ghosts = retained[-self.max_ghost_slides:] if self.max_ghost_slides else []
+        
+        # Age out ghosts: increment ghost age and remove expired ghosts
+        # Ghosts expire after max_turns as a ghost (prevents memory leak)
+        surviving_ghosts = []
+        for s in retained:
+            self.ghost_ages[s.id] = self.ghost_ages.get(s.id, 0) + 1
+            if self.ghost_ages[s.id] <= self.max_turns:
+                surviving_ghosts.append(s)
+            else:
+                # Ghost has expired, clean up
+                del self.ghost_ages[s.id]
+        
+        # Apply max_ghost_slides cap to aged ghosts
+        if self.max_ghost_slides:
+            self.ghosts = surviving_ghosts[-self.max_ghost_slides:]
+        else:
+            self.ghosts = []
 
     def all_slides(self) -> List[Slide]:
         return self.active + self.ghosts

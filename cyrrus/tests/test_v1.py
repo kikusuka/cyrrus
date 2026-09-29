@@ -351,7 +351,7 @@ async def test_budget_never_exceeded_across_turns():
 
     for msg in messages:
         await pipeline.process(msg, session_id="budget_regression_test")
-        tray = pipeline._get_tray("budget_regression_test")
+        tray = await pipeline._get_tray("budget_regression_test")
         active_token_sum = sum(s.tokens for s in tray.active) + sum(s.tokens for s in tray.ghosts)
         check(f"cumulative tray tokens ({active_token_sum}) stay within the per-turn budget ({available_per_turn}) after '{msg}'",
               active_token_sum <= available_per_turn)
@@ -384,7 +384,7 @@ async def test_max_active_turns_configurable():
     await pipeline_short.process("write a python script", session_id="short_turns")
     await pipeline_short.process("hello", session_id="short_turns")
     await pipeline_short.process("hello again", session_id="short_turns")
-    tray_short = pipeline_short._get_tray("short_turns")
+    tray_short = await pipeline_short._get_tray("short_turns")
     # code_lens has active_turns=6 in slides.json — should still be active after 3 turns
     still_active = any(s.id == "code_lens" for s in tray_short.active)
     check("per-slide active_turns=6 keeps code_lens active even when global max_active_turns=1",
@@ -405,13 +405,60 @@ async def test_max_active_turns_configurable():
     await p.process("testword", session_id="u")
     await p.process("hello", session_id="u")
     await p.process("hello again", session_id="u")
-    tray = p._get_tray("u")
+    tray = await p._get_tray("u")
     is_ghost = any(s.id == "test_slide" for s in tray.ghosts)
     check("global max_active_turns=1 causes ghost by turn 3 when no per-slide active_turns set",
           is_ghost)
     for ext in ["", "-wal", "-shm"]:
         try: os.remove(tmp + ext)
         except: pass
+
+
+async def test_ghost_aging_by_turn_count():
+    """Ghosts should age out by turn count, not just when cap is exceeded."""
+    pipeline = fresh_pipeline(max_active_turns=1, max_ghost_slides=10)  # High cap to test age-based expiration
+    await pipeline.process("write a python script", session_id="ghost_age_test")
+    tray = await pipeline._get_tray("ghost_age_test")
+    check("code_lens is active initially", any(s.id == "code_lens" for s in tray.active))
+    
+    # Turn 2: code_lens becomes a ghost
+    await pipeline.process("hello", session_id="ghost_age_test")
+    tray = await pipeline._get_tray("ghost_age_test")
+    check("code_lens becomes a ghost after max_active_turns", any(s.id == "code_lens" for s in tray.ghosts))
+    
+    # Turn 3: ghost age = 1
+    await pipeline.process("hello again", session_id="ghost_age_test")
+    tray = await pipeline._get_tray("ghost_age_test")
+    check("code_lens ghost still present at age 1", any(s.id == "code_lens" for s in tray.ghosts))
+    
+    # Turn 4: ghost age = 2 (max_turns for ghost expiration)
+    await pipeline.process("hello once more", session_id="ghost_age_test")
+    tray = await pipeline._get_tray("ghost_age_test")
+    check("code_lens ghost expires after max_turns as ghost", not any(s.id == "code_lens" for s in tray.ghosts))
+
+
+async def test_synonym_over_expansion_fixed():
+    """'make' should not trigger code_lens for non-coding questions."""
+    from cyrrus.router import IntentRouter
+    from cyrrus.stemmer import SYNONYMS
+    
+    # Verify 'make' is no longer in synonyms that would trigger code_lens
+    check("'make' removed from general utility synonyms", 'make' not in SYNONYMS)
+    
+    # Test routing directly
+    config = {
+        "core_lamp": {"content": "x"},
+        "code_lens": {"content": "code help", "triggers": ["code", "build", "implement"]},
+    }
+    router = IntentRouter(config, negation_aware=False)
+    
+    # "How do I make a cake" should NOT trigger code_lens
+    slides, negated = await router.route("How do I make a cake")
+    check("'make cake' does not trigger code_lens", not any(s.id == "code_lens" for s in slides))
+    
+    # But "build" should still trigger code_lens
+    slides, negated = await router.route("help me build something")
+    check("'build' still triggers code_lens", any(s.id == "code_lens" for s in slides))
 
 
 async def test_memory_cap_configurable():
@@ -552,6 +599,8 @@ async def main():
     await test_budget_never_exceeded_across_turns()
     await test_budget_enforcement_still_guarantees_current_turn_match()
     await test_max_active_turns_configurable()
+    await test_ghost_aging_by_turn_count()
+    await test_synonym_over_expansion_fixed()
     await test_memory_cap_configurable()
     await test_fact_value_length_cap()
     await test_wal_mode_enabled()
