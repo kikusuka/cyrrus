@@ -18,13 +18,22 @@ class IntentRouter:
     cyrrus[embeddings] and use EmbeddingRouter to match against examples
     semantically. IntentRouter focuses on what it can do reliably: exact
     trigger word matching.
+
+    Parameters
+    ----------
+    synonyms : dict or None, optional
+        Custom synonym table to use instead of the default.
+        Pass None or {} to disable synonym expansion entirely.
+        Default uses the trimmed domain-specific table.
     """
 
-    def __init__(self, slides_config: dict, negation_aware: bool = True):
+    def __init__(self, slides_config: dict, negation_aware: bool = True, synonyms=None):
         self.slides = slides_config
         self.negation_aware = negation_aware
         self._keyword_map: Dict[str, Set[str]] = {}
+        self._phrase_map: Dict[str, Set[str]] = {}
         self._stemmer = PorterStemmer()
+        self._synonyms = synonyms
         self._build_index()
 
     def _build_index(self):
@@ -32,8 +41,14 @@ class IntentRouter:
             if slide_id == "core_lamp" or slide_id.startswith("_"):
                 continue
             for trigger in data.get("triggers", []):
-                # Normalize trigger: stem and add all synonym variants
-                normalized_forms = normalize_token(trigger, self._stemmer)
+                # Multi-word triggers (phrase match) — store lowercased phrase directly
+                # so we can substring-match against the raw lowercased input text.
+                if " " in trigger.strip():
+                    phrase = trigger.lower().strip()
+                    self._phrase_map.setdefault(phrase, set()).add(slide_id)
+                    continue
+                # Single-word triggers: stem and add all synonym variants
+                normalized_forms = normalize_token(trigger, self._stemmer, self._synonyms)
                 for form in normalized_forms:
                     self._keyword_map.setdefault(form, set()).add(slide_id)
 
@@ -55,7 +70,7 @@ class IntentRouter:
         matched = set()
         negated = set()
 
-        # Tokenize input and normalize each token
+        # Tokenize input and normalize each token (single-word triggers)
         tokens = re.findall(r'\b\w+\b', lower)
         
         for token in tokens:
@@ -71,6 +86,15 @@ class IntentRouter:
                                 negated.add(sid)
                             else:
                                 matched.add(sid)
+
+        # Multi-word / phrase triggers — substring match against raw lowercased input
+        for phrase, sids in self._phrase_map.items():
+            for m in re.finditer(rf"\b{re.escape(phrase)}\b", lower):
+                for sid in sids:
+                    if self.negation_aware and is_negated(lower, m.start()):
+                        negated.add(sid)
+                    else:
+                        matched.add(sid)
 
         slides = [self._make_slide(sid) for sid in matched]
         slides.sort(key=lambda s: s.priority, reverse=True)

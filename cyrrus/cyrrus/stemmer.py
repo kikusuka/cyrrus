@@ -5,7 +5,7 @@ Public domain Porter stemmer implementation based on the original algorithm
 by Martin Porter (1980). No external dependencies required.
 """
 
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 
 
 # Porter Stemmer - Pure Python implementation
@@ -174,7 +174,9 @@ class PorterStemmer:
         return word
 
 
-# Synonym table for common domains
+# Synonym table for common domains - trimmed to domain-specific groups only
+# General utility verbs (make, build, use, get, want, show, tell, find, check) removed
+# to prevent over-expansion into unrelated slide domains.
 SYNONYMS: Dict[str, Set[str]] = {
     # Coding/technical (18 entries)
     'bug': {'error', 'issue', 'problem', 'defect', 'glitch'},
@@ -232,28 +234,17 @@ SYNONYMS: Dict[str, Set[str]] = {
     'task': {'job', 'assignment', 'duty', 'chore'},
     'deadline': {'duedate', 'cutoff', 'timelimit', 'target'},
     'agenda': {'schedule', 'plan', 'itinerary', 'program'},
-    
-    # General utility (10 entries)
-    'want': {'need', 'desire', 'require', 'wish'},
-    'need': {'want', 'require', 'desire', 'must'},
-    'use': {'utilize', 'employ', 'apply', 'leverage'},
-    'get': {'obtain', 'acquire', 'retrieve', 'fetch'},
-    'find': {'locate', 'discover', 'search', 'look'},
-    'search': {'find', 'look', 'seek', 'query'},
-    'show': {'display', 'present', 'demonstrate', 'reveal'},
-    'display': {'show', 'present', 'exhibit', 'render'},
-    'tell': {'inform', 'notify', 'communicate', 'say'},
-    'check': {'verify', 'inspect', 'examine', 'review'},
 }
 
 
-def normalize_token(token: str, stemmer: PorterStemmer) -> Set[str]:
+def normalize_token(token: str, stemmer: PorterStemmer, synonyms: Optional[Dict[str, Set[str]]] = None) -> Set[str]:
     """
     Normalize a token by stemming and expanding synonyms.
     
     Args:
         token: The token to normalize
         stemmer: PorterStemmer instance
+        synonyms: Optional custom synonym table. If None, uses the global trimmed table.
         
     Returns:
         Set of normalized forms (stemmed + synonyms)
@@ -264,13 +255,16 @@ def normalize_token(token: str, stemmer: PorterStemmer) -> Set[str]:
     # Collect all equivalent forms
     normalized = {stemmed, token}
     
+    # Use custom synonyms table if provided, otherwise use global
+    synonym_table = synonyms if synonyms is not None else SYNONYMS
+    
     # Add synonyms
-    for word, synonyms in SYNONYMS.items():
-        if token in synonyms or stemmed in synonyms:
-            normalized.update(synonyms)
+    for word, syns in synonym_table.items():
+        if token in syns or stemmed in syns:
+            normalized.update(syns)
             normalized.add(word)
         if word == token or word == stemmed:
-            normalized.update(synonyms)
+            normalized.update(syns)
     
     return normalized
 
