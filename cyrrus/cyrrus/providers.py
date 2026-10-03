@@ -137,50 +137,37 @@ def normalize_ollama_chunk(chunk: Any) -> StreamChunk:
 
 
 def _split_system(messages: list) -> tuple:
-    system = ""
+    parts = []
     filtered = []
     for m in messages:
         if m["role"] == "system":
-            system = m["content"]
+            parts.append(m["content"])
         else:
             filtered.append(m)
-    return system, filtered
+    return "\n\n".join(parts), filtered
 
 
 def ollama(model: str = "llama3.2", base_url: str = "http://localhost:11434") -> callable:
     """
     Local Ollama. Free, no API key needed.
     Setup: ollama serve && ollama pull llama3.2
+    Requires: pip install ollama
     """
-    import json
-    import urllib.request
+    try:
+        from ollama import AsyncClient
+    except ImportError:
+        raise ImportError(
+            "ollama package not found. Run: pip install ollama\n"
+            "Or use cyrrus.providers.openai() for cloud APIs."
+        )
+
+    client = AsyncClient(host=base_url)
 
     async def _call(messages: list) -> str:
-        payload = json.dumps({
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }).encode()
-        req = urllib.request.Request(
-            f"{base_url}/v1/chat/completions",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer ollama",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+        response = await client.chat(model=model, messages=messages, stream=False)
+        return response["message"]["content"]
 
     async def _astream(messages: list):
-        try:
-            from ollama import AsyncClient
-        except ImportError:
-            raise ImportError(
-                "ollama package not found. Run: pip install ollama\n"
-                "(needed for astream(); the non-streaming wrapper uses urllib.)"
-            )
-        client = AsyncClient(host=base_url)
         stream = await client.chat(model=model, messages=messages, stream=True)
         async for chunk in stream:
             yield normalize_ollama_chunk(chunk)

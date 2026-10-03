@@ -1,4 +1,4 @@
-from .projector import Projector
+from .projector import Projector, SessionLocks
 from .data import Slide
 from .memory import MemoryVault
 from .router import IntentRouter
@@ -11,8 +11,10 @@ from .extractor import (
 )
 from .providers import StreamChunk
 from . import providers
+from .backend import MemoryBackend
+from .sqlite_backend import SQLiteBackend, get_backend, close_backend
 
-__version__ = "0.1.0"
+__version__ = "0.3.0b1"
 
 def estimate_tokens(text: str) -> int:
     """Rough token count. Useful for setting 'tokens' in config manually."""
@@ -20,6 +22,7 @@ def estimate_tokens(text: str) -> int:
 
 __all__ = [
     "Projector",
+    "SessionLocks",
     "Slide",
     "MemoryVault",
     "IntentRouter",
@@ -30,6 +33,10 @@ __all__ = [
     "get_fact_extractor_tier",
     "StreamChunk",
     "providers",
+    "MemoryBackend",
+    "SQLiteBackend",
+    "get_backend",
+    "close_backend",
     "estimate_tokens",
     "__version__",
 ]

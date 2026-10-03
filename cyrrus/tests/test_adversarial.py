@@ -247,7 +247,7 @@ async def test_pipeline_attacks():
     bot2 = Projector(base_config(), llm_call=mutating_llm, memory_db_path=DB)
     await bot2.process("hello turn 1", session_id="u")
     await bot2.process("hello turn 2", session_id="u")
-    history = list(bot2._get_history("u"))
+    history = list(await bot2._get_history("u"))
     user_msgs = [m["content"] for m in history if m["role"] == "user"]
     check(
         "mutating LLM: history still contains real user messages, not the mutated content",
@@ -322,7 +322,7 @@ async def test_history_attacks():
     bot = Projector(base_config(), llm_call=huge_llm, history_window=3, memory_db_path=DB)
     for i in range(6):
         await bot.process("hello", session_id="u")
-    history = list(bot._get_history("u"))
+    history = list(await bot._get_history("u"))
     total_chars = sum(len(m["content"]) for m in history)
     check(
         f"1MB responses: window=3 caps history (6 turns x 100k chars, kept={len(history)} msgs)",
@@ -339,7 +339,7 @@ async def test_history_attacks():
     bot2 = Projector(base_config(), llm_call=echo, history_window=3, memory_db_path=DB)
     for i in range(10):
         await bot2.process(f"message_{i}", session_id="u")
-    history = list(bot2._get_history("u"))
+    history = list(await bot2._get_history("u"))
     user_msgs = [m["content"] for m in history if m["role"] == "user"]
     check("history eviction: oldest messages dropped first", "message_0" not in user_msgs)
     check("history eviction: newest messages kept", "message_9" in user_msgs)
@@ -351,7 +351,7 @@ async def test_history_attacks():
         bot3.process(f"concurrent_{i}", session_id="shared")
         for i in range(10)
     ])
-    history = list(bot3._get_history("shared"))
+    history = list(await bot3._get_history("shared"))
     user_msgs = [m["content"] for m in history if m["role"] == "user"]
     has_dupes = len(user_msgs) != len(set(user_msgs))
     check(
@@ -364,8 +364,8 @@ async def test_history_attacks():
     bot4 = make_bot()
     await bot4.process("alice secret", session_id="alice")
     await bot4.process("bob secret", session_id="bob")
-    alice_hist = [m["content"] for m in bot4._get_history("alice")]
-    bob_hist = [m["content"] for m in bot4._get_history("bob")]
+    alice_hist = [m["content"] for m in await bot4._get_history("alice")]
+    bob_hist = [m["content"] for m in await bot4._get_history("bob")]
     check("history isolation: alice's history has no bob content", not any("bob" in c for c in alice_hist))
     check("history isolation: bob's history has no alice content", not any("alice" in c for c in bob_hist))
     cleanup()

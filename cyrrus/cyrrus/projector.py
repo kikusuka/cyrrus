@@ -199,6 +199,7 @@ class Projector:
         trace_log_size: int = 200,
         max_active_turns: int = 2,
         max_ghost_slides: int = 5,
+        max_ghost_turns: int = 2,
         timeout: Optional[float] = None,
         memory_db_path: str = "slides_memory.db",
         memory_max_facts_per_session: int = 500,
@@ -227,6 +228,7 @@ class Projector:
         self.history_verbatim_turns = history_verbatim_turns
         self.max_active_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
+        self.max_ghost_turns = max_ghost_turns
         self.timeout = timeout
         self.tool_executor_timeout = tool_executor_timeout
         self.tray_factory = tray_factory
@@ -274,27 +276,41 @@ class Projector:
         """
         return cls({"core_lamp": {"content": persona}}, llm_call=llm_call, **kwargs)
 
-    def _get_tray(self, session_id: str) -> SlideTray:
-        if session_id not in self.trays:
-            if self.tray_factory:
-                try:
-                    tray = self.tray_factory(self.max_active_turns, self.max_ghost_slides)
-                except TypeError:
-                    # Preserve compatibility with factories written before
-                    # max_ghost_slides was added.
-                    tray = self.tray_factory(self.max_active_turns)
-            else:
-                tray = SlideTray(
-                    max_active_turns=self.max_active_turns,
-                    max_ghost_slides=self.max_ghost_slides,
-                )
-            self.trays[session_id] = tray
-        return self.trays[session_id]
+    async def _get_tray(self, session_id: str) -> SlideTray:
+        # Protect tray creation with session lock to prevent race conditions
+        session_lock = await self._session_locks.get(session_id)
+        async with session_lock:
+            if session_id not in self.trays:
+                if self.tray_factory:
+                    try:
+                        tray = self.tray_factory(
+                            self.max_active_turns,
+                            self.max_ghost_slides,
+                            self.max_ghost_turns,
+                        )
+                    except TypeError:
+                        try:
+                            tray = self.tray_factory(
+                                self.max_active_turns, self.max_ghost_slides
+                            )
+                        except TypeError:
+                            tray = self.tray_factory(self.max_active_turns)
+                else:
+                    tray = SlideTray(
+                        max_active_turns=self.max_active_turns,
+                        max_ghost_slides=self.max_ghost_slides,
+                        max_ghost_turns=self.max_ghost_turns,
+                    )
+                self.trays[session_id] = tray
+            return self.trays[session_id]
 
-    def _get_history(self, session_id: str) -> deque:
-        if session_id not in self._histories:
-            self._histories[session_id] = deque(maxlen=self.history_window * 2)
-        return self._histories[session_id]
+    async def _get_history(self, session_id: str) -> deque:
+        # Protect history creation with session lock to prevent race conditions
+        session_lock = await self._session_locks.get(session_id)
+        async with session_lock:
+            if session_id not in self._histories:
+                self._histories[session_id] = deque(maxlen=self.history_window * 2)
+            return self._histories[session_id]
 
     async def process(self, user_input: str, session_id: str = "default") -> str:
         """
@@ -345,7 +361,7 @@ class Projector:
             trace["latency_s"] = round(time.time() - start, 4)
             self._record_trace(trace)
             try:
-                history = list(self._get_history(session_id))
+                history = list(await self._get_history(session_id))
                 fallback_messages = history + [{"role": "user", "content": user_input}]
                 return await self.llm_call(fallback_messages)
             except Exception as llm_err:
@@ -438,8 +454,11 @@ class Projector:
     ):
         try:
             if completed and history is not None:
-                history.append({"role": "user", "content": user_input})
-                history.append({"role": "assistant", "content": full})
+                # Protect history modification with session lock
+                session_lock = await self._session_locks.get(session_id)
+                async with session_lock:
+                    history.append({"role": "user", "content": user_input})
+                    history.append({"role": "assistant", "content": full})
                 if self.fact_extractor:
                     await self._shadow_extract(user_input, session_id)
         except Exception as e:
@@ -447,8 +466,8 @@ class Projector:
         self._record_trace(trace)
 
     async def _prepare_turn(self, user_input: str, session_id: str, trace: dict):
-        tray = self._get_tray(session_id)
-        history = self._get_history(session_id)
+        tray = await self._get_tray(session_id)
+        history = await self._get_history(session_id)
 
         candidates, negated_ids = await self.router.route(user_input)
         memory_slides = await self.memory.retrieve(session_id, user_input, limit=2)
@@ -604,8 +623,11 @@ class Projector:
         response = await self.llm_call(messages)
 
         # Store this turn in history for the next call.
-        history.append({"role": "user", "content": user_input})
-        history.append({"role": "assistant", "content": response})
+        # Protect history modification with session lock
+        session_lock = await self._session_locks.get(session_id)
+        async with session_lock:
+            history.append({"role": "user", "content": user_input})
+            history.append({"role": "assistant", "content": response})
 
         return response, trace
 

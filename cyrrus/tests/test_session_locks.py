@@ -131,7 +131,7 @@ async def test_concurrent_tray_mutations():
     ])
     
     # Check the final tray state
-    tray = bot._get_tray(session_id)
+    tray = await bot._get_tray(session_id)
     
     # Count ghosts - should not have duplicates
     ghost_ids = [s.id for s in tray.ghosts]
@@ -176,7 +176,7 @@ async def test_concurrent_tray_mutations():
         for msg in messages
     ])
     
-    tray2 = bot2._get_tray(session_id2)
+    tray2 = await bot2._get_tray(session_id2)
     
     # Compare ghost counts (should be the same)
     if len(tray.ghosts) == len(tray2.ghosts):
@@ -222,14 +222,14 @@ async def test_concurrent_different_sessions():
     
     # Check that each session has its own tray
     for session_id in session_ids:
-        tray = bot._get_tray(session_id)
+        tray = await bot._get_tray(session_id)
         if tray:
             print(f"  [INFO] Session {session_id}: {len(tray.active)} active, {len(tray.ghosts)} ghosts")
         else:
             print(f"  [FAIL] Session {session_id} has no tray")
     
     # Check that sessions don't share trays
-    trays = [bot._get_tray(sid) for sid in session_ids]
+    trays = [await bot._get_tray(sid) for sid in session_ids]
     unique_trays = len(set(id(t) for t in trays if t))
     
     if unique_trays == len(session_ids):
@@ -264,7 +264,7 @@ async def test_ghost_counter_consistency():
     for i in range(30):
         await bot.process("write some code", session_id=session_id)
     
-    tray = bot._get_tray(session_id)
+    tray = await bot._get_tray(session_id)
     code_lens = [s for s in tray.all_slides() if s.id == "code_lens"]
     
     if code_lens:
