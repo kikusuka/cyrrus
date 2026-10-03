@@ -157,8 +157,7 @@ class MemoryVault:
             return self._keyword_retrieve(rows, user_input, limit)
 
     def _keyword_retrieve(self, rows: list, user_input: str, limit: int) -> list:
-        # Use negative threshold to include all current facts (for temporal correctness)
-        ranked = bm25_rank_facts(rows, user_input, limit=limit, score_threshold=-1.0)
+        ranked = bm25_rank_facts(rows, user_input, limit=limit, score_threshold=0.0)
         return [
             Slide(
                 id=f"mem_{kw}",
