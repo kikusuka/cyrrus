@@ -42,3 +42,6 @@ cyrrus = ["py.typed"]
 # It lives in the repo but doesn't ship in the pip package.
 [tool.setuptools.exclude-package-data]
 cyrrus = ["threshold_calibration.py"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
