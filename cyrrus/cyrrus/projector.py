@@ -507,7 +507,8 @@ class Projector:
         # Wrap tray mutations in per-session lock to prevent race conditions
         session_lock = await self._session_locks.get(session_id)
         async with session_lock:
-            tray.update(packed)
+            # Only add routed slides to the tray; memory slides are retrieved fresh each turn
+            tray.update(packed_routed)
 
             routed_ids = {s.id for s in packed_routed}
             all_tray = tray.all_slides()
@@ -531,6 +532,9 @@ class Projector:
                 tray.active = [s for s in tray.active if s.id not in evicted]
                 tray.ghosts = [s for s in tray.ghosts if s.id not in evicted]
             trace["dropped_from_tray_over_budget"] = list(evicted)
+
+        # Add memory slides - they're retrieved fresh each turn, not persisted in tray
+        final_slides = final_slides + packed_memory
 
         # Sort by id for prompt caching — byte-identical prefix when same
         # slides are selected lets the provider cache the system message.
