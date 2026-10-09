@@ -235,6 +235,7 @@ class Projector:
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
         self._session_locks = SessionLocks()  # per-session locking for tray mutations
+        self._pending_extractions = set()  # track background fact extraction tasks
 
         if self.compress_tool_output and self.compressor is None:
             from .compression import ExtractiveCompressor
@@ -622,7 +623,9 @@ class Projector:
         # asyncio.wait_for can cancel _process_inner but the LLM call keeps
         # running anyway. Awaiting directly lets the timeout actually work.
         if self.fact_extractor:
-            asyncio.create_task(self._shadow_extract(user_input, session_id))
+            task = asyncio.create_task(self._shadow_extract(user_input, session_id))
+            self._pending_extractions.add(task)
+            task.add_done_callback(self._pending_extractions.discard)
 
         response = await self.llm_call(messages)
 
@@ -664,6 +667,28 @@ class Projector:
         await process() there instead.
         """
         return asyncio.run(self.process(user_input, session_id=session_id))
+
+    async def flush(self):
+        """
+        Wait for all pending background fact extraction tasks to complete.
+        Call this before shutting down to ensure all facts are stored.
+        """
+        if self._pending_extractions:
+            await asyncio.gather(*self._pending_extractions, return_exceptions=True)
+            self._pending_extractions.clear()
+
+    async def aclose(self):
+        """
+        Clean up resources and wait for pending tasks.
+        Alias for flush() - provided for async context manager support.
+        """
+        await self.flush()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.aclose()
 
     def _record_trace(self, trace: dict):
         self.last_trace = trace
