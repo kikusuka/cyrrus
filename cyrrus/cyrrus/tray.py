@@ -69,7 +69,7 @@ class SlideTray:
         for s in retained:
             if s.id not in newly_ghosted:
                 self.ghost_ages[s.id] = self.ghost_ages.get(s.id, 0) + 1
-            if self.ghost_ages[s.id] <= self.max_ghost_turns:
+            if self.ghost_ages[s.id] < self.max_ghost_turns:
                 surviving_ghosts.append(s)
             else:
                 self.ghost_ages.pop(s.id, None)
