@@ -14,11 +14,10 @@ def test_ghost_expires_after_configured_untriggered_turns():
     tray.update([])  # coding fades, at ghost age zero
     assert [s.id for s in tray.ghosts] == ["coding"]
 
-    tray.update([])
-    tray.update([])
+    tray.update([])  # ghost age 1
     assert [s.id for s in tray.ghosts] == ["coding"]
 
-    tray.update([])
+    tray.update([])  # ghost age 2 - should expire
     assert tray.ghosts == []
 
 

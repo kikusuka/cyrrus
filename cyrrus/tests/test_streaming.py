@@ -132,7 +132,7 @@ async def test_cancel_mid_stream_does_not_write_history():
         await task
 
     assert chunks == ["hel"]
-    assert list(bot._get_history("cancel-me")) == []
+    assert list(await bot._get_history("cancel-me")) == []
     assert extracted == []
     assert bot.last_trace.get("error") == "CancelledError"
     assert bot.last_trace.get("response") == "hel"
@@ -153,7 +153,7 @@ async def test_complete_stream_writes_history_and_extracts():
     async for _ in bot.aprocess_stream("hello there", session_id="ok"):
         pass
 
-    hist = list(bot._get_history("ok"))
+    hist = list(await bot._get_history("ok"))
     assert hist == [
         {"role": "user", "content": "hello there"},
         {"role": "assistant", "content": "done"},
