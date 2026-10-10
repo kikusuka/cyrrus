@@ -99,6 +99,18 @@ memory = MemoryVault()
 facts = await memory.retrieve("user_123", "what is my name", limit=3)
 ```
 
+Projector also works as an async context manager — background fact extraction is awaited and cleaned up on exit:
+
+```python
+async with Projector(config, llm_call=ollama("llama3.2")) as bot:
+    reply = await bot.process("hello", session_id=str(user_id))
+
+# or manage the lifecycle yourself
+bot = Projector(config, llm_call=ollama("llama3.2"))
+reply = await bot.process("hello", session_id=str(user_id))
+await bot.aclose()
+```
+
 ---
 
 ## Providers
