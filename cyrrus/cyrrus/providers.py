@@ -20,6 +20,11 @@ you already have. Import errors tell you exactly what to install.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import socket
+import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -147,33 +152,95 @@ def _split_system(messages: list) -> tuple:
     return "\n\n".join(parts), filtered
 
 
-def ollama(model: str = "llama3.2", base_url: str = "http://localhost:11434") -> callable:
+def ollama(
+    model: str = "llama3.2",
+    base_url: str = "http://localhost:11434",
+    timeout: Optional[float] = 120.0,
+) -> callable:
     """
     Local Ollama. Free, no API key needed.
-    Setup: ollama serve && ollama pull llama3.2
-    Requires: pip install ollama
+
+    Two paths, both non-blocking to the asyncio event loop:
+      * If the `ollama` pip package is installed: use AsyncClient directly.
+      * Otherwise: stdlib urllib.request over HTTP, wrapped in
+        asyncio.to_thread so the blocking socket call does not freeze
+        the event loop.
+
+    Args:
+        model: Ollama model tag (e.g. "llama3.2", "mistral").
+        base_url: Ollama server HTTP endpoint.
+        timeout: Per-request timeout in seconds. Applied to both the
+                 AsyncClient path AND the urllib fallback path. Use
+                 None for no timeout.
     """
     try:
-        from ollama import AsyncClient
+        from ollama import AsyncClient as _OllamaAsyncClient
     except ImportError:
-        raise ImportError(
-            "ollama package not found. Run: pip install ollama\n"
-            "Or use cyrrus.providers.openai() for cloud APIs."
+        _OllamaAsyncClient = None
+
+    if _OllamaAsyncClient is not None:
+        client_kwargs = {"host": base_url}
+        if timeout is not None:
+            try:
+                import httpx
+                client_kwargs["client"] = httpx.AsyncClient(timeout=timeout)
+            except Exception:
+                pass
+        client = _OllamaAsyncClient(**client_kwargs)
+
+        async def _call(messages: list) -> str:
+            response = await client.chat(model=model, messages=messages, stream=False)
+            return response["message"]["content"]
+
+        async def _astream(messages: list):
+            stream = await client.chat(model=model, messages=messages, stream=True)
+            async for chunk in stream:
+                yield normalize_ollama_chunk(chunk)
+
+        _call.astream = _astream
+        return _call
+
+    # ---------- Stdlib urllib fallback (blocking IO, wrapped in to_thread) ----------
+    def _ollama_http_blocking(
+        messages: list, *, stream: bool,
+    ) -> Any:
+        """Blocking HTTP POST to Ollama /api/chat. Runs in a thread pool."""
+        payload = {"model": model, "messages": messages, "stream": stream}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
+        sock_timeout = socket._GLOBAL_DEFAULT_TIMEOUT if timeout is None else timeout
+        try:
+            with urllib.request.urlopen(req, timeout=sock_timeout) as resp:
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"Ollama HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}"
+            ) from e
+        if stream:
+            # Stream: return list of NDJSON lines parsed into dicts
+            lines = body.decode("utf-8", errors="replace").splitlines()
+            return [json.loads(l) for l in lines if l.strip()]
+        obj = json.loads(body.decode("utf-8", errors="replace"))
+        return obj
 
-    client = AsyncClient(host=base_url)
+    async def _call_fallback(messages: list) -> str:
+        obj = await asyncio.to_thread(_ollama_http_blocking, messages, stream=False)
+        if isinstance(obj, dict) and "message" in obj and "content" in obj["message"]:
+            return obj["message"]["content"]
+        raise RuntimeError(f"Unexpected Ollama response: {obj!r}")
 
-    async def _call(messages: list) -> str:
-        response = await client.chat(model=model, messages=messages, stream=False)
-        return response["message"]["content"]
+    async def _astream_fallback(messages: list):
+        chunks = await asyncio.to_thread(_ollama_http_blocking, messages, stream=True)
+        for raw in chunks:
+            yield normalize_ollama_chunk(raw)
 
-    async def _astream(messages: list):
-        stream = await client.chat(model=model, messages=messages, stream=True)
-        async for chunk in stream:
-            yield normalize_ollama_chunk(chunk)
-
-    _call.astream = _astream
-    return _call
+    _call_fallback.astream = _astream_fallback
+    return _call_fallback
 
 
 def openai(model: str = "gpt-4o-mini", api_key: str = None, base_url: str = None) -> callable:
