@@ -202,7 +202,7 @@ class Projector:
         max_ghost_turns: int = 2,
         timeout: Optional[float] = None,
         memory_db_path: str = "slides_memory.db",
-        memory_max_facts_per_session: int = 500,
+        memory_max_facts_per_session: Optional[int] = None,
         memory_max_fact_value_length: int = 2000,
         max_memory_facts: int = 5,
         max_memory_tokens: Optional[int] = None,

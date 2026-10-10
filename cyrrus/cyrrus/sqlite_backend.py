@@ -8,7 +8,7 @@ import sqlite3
 import time
 import logging
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncio
 import threading
 from .backend import MemoryBackend, validate_session_id, validate_keyword
@@ -233,7 +233,7 @@ class SQLiteBackend(MemoryBackend):
         keyword: str,
         value: str,
         tokens: int,
-        max_facts_per_session: int,
+        max_facts_per_session: Optional[int],
         max_fact_value_length: int
     ) -> None:
         """Store or update a fact for a session with temporal tracking."""
@@ -272,35 +272,30 @@ class SQLiteBackend(MemoryBackend):
                 (session_id, keyword, value, tokens, time.time(), now),
             )
             
-            # Count current facts only (invalid_at IS NULL) for overflow check
-            count = conn.execute(
-                "SELECT COUNT(*) FROM facts WHERE session_id=? AND invalid_at IS NULL", 
-                (session_id,)
-            ).fetchone()[0]
-            if count > max_facts_per_session:
-                overflow = count - max_facts_per_session
-                conn.execute("""
-                    DELETE FROM facts WHERE rowid IN (
-                        SELECT rowid FROM facts WHERE session_id=? AND invalid_at IS NULL
-                        ORDER BY last_accessed ASC LIMIT ?
-                    )
-                """, (session_id, overflow))
-            
-            # Also prune historical rows to prevent unbounded growth
-            # Keep at most 3x max_facts_per_session total rows per session
-            total_count = conn.execute(
-                "SELECT COUNT(*) FROM facts WHERE session_id=?", 
-                (session_id,)
-            ).fetchone()[0]
-            max_total = max_facts_per_session * 3
-            if total_count > max_total:
-                historical_overflow = total_count - max_total
-                conn.execute("""
-                    DELETE FROM facts WHERE rowid IN (
-                        SELECT rowid FROM facts WHERE session_id=? AND invalid_at IS NOT NULL
-                        ORDER BY valid_at ASC LIMIT ?
-                    )
-                """, (session_id, historical_overflow))
+            if max_facts_per_session is not None:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE session_id=?",
+                    (session_id,)
+                ).fetchone()[0]
+                if total > max_facts_per_session:
+                    overflow = total - max_facts_per_session
+                    # Oldest superseded rows go first; only then oldest active ones.
+                    cursor = conn.execute("""
+                        DELETE FROM facts WHERE rowid IN (
+                            SELECT rowid FROM facts
+                            WHERE session_id=? AND invalid_at IS NOT NULL
+                            ORDER BY valid_at ASC, rowid ASC LIMIT ?
+                        )
+                    """, (session_id, overflow))
+                    overflow -= cursor.rowcount
+                    if overflow > 0:
+                        conn.execute("""
+                            DELETE FROM facts WHERE rowid IN (
+                                SELECT rowid FROM facts
+                                WHERE session_id=? AND invalid_at IS NULL
+                                ORDER BY valid_at ASC, rowid ASC LIMIT ?
+                            )
+                        """, (session_id, overflow))
             
             conn.commit()
         

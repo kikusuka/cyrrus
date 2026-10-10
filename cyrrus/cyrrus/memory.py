@@ -30,7 +30,7 @@ class MemoryVault:
     def __init__(
         self,
         db_path: str = "slides_memory.db",
-        max_facts_per_session: int = 500,
+        max_facts_per_session: Optional[int] = None,
         max_fact_value_length: int = 2000,
         embedder: object = None,
         embedding_model: str = "BAAI/bge-small-en-v1.5",

@@ -60,7 +60,7 @@ class MemoryBackend(ABC):
         keyword: str,
         value: str,
         tokens: int,
-        max_facts_per_session: int,
+        max_facts_per_session: Optional[int],
         max_fact_value_length: int
     ) -> None:
         """
@@ -75,7 +75,9 @@ class MemoryBackend(ABC):
             keyword: The fact keyword
             value: The fact value
             tokens: Estimated token count
-            max_facts_per_session: Maximum current facts per session (for pruning)
+            max_facts_per_session: Maximum facts per session (None = unlimited).
+                When exceeded, oldest superseded facts are deleted first,
+                then oldest active facts.
             max_fact_value_length: Maximum length for fact values (for truncation)
         """
         pass
