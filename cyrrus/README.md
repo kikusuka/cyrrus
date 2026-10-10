@@ -197,6 +197,36 @@ Without a unique session_id, users share memory. That's a bug, not a feature.
 
 ---
 
+## Chat adapter
+
+`cyrrus.adapters.make_chat()` builds a single `chat(session_id, user_text)`
+coroutine you can drop into a Discord/Slack/Telegram bot in two lines.
+
+**15-line Discord bot example:**
+
+```python
+import discord, os, asyncio
+from cyrrus import Projector
+from cyrrus.adapters import make_chat
+from cyrrus.providers import ollama  # or openai / anthropic / groq
+
+SLIDES = {"core_lamp": {"content": "You are a friendly assistant."}}
+client = discord.Client(intents=discord.Intents.default())
+bot = Projector(SLIDES, llm_call=ollama("llama3.2"))
+chat = make_chat(bot)
+
+@client.event
+async def on_message(m):
+    if m.author == client.user or not m.content.startswith("!"):
+        return
+    reply = await chat(str(m.author.id), m.content[1:].strip())
+    await m.channel.send(reply[:2000])
+
+asyncio.run(client.start(os.environ["DISCORD_TOKEN"]))
+```
+
+---
+
 ## Tracing
 
 Every call stores a trace:
