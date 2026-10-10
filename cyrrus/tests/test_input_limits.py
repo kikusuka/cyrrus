@@ -26,8 +26,10 @@ async def test_memory_layer_rejects_bad_session_id(tmp_path):
         await vault.upsert("", "user_name", "Alice", 1)
     with pytest.raises(ValueError):
         await vault.retrieve(LONG_ID, "what is my name")
-    with pytest.raises(ValueError):
-        await vault.retrieve("", "what is my name")
+    # Reads with empty/None ids stay graceful (isolation, not an error) —
+    # tests/test_failsafe.py::test_isolation depends on this.
+    assert await vault.retrieve("", "what is my name") == []
+    assert await vault.retrieve(None, "what is my name") == []
     with pytest.raises(ValueError):
         await vault.delete_session("")
     with pytest.raises(ValueError):
@@ -91,6 +93,8 @@ async def test_sqlite_backend_rejects_bad_input():
             await backend.upsert("s1", LONG_KEYWORD, "Alice", 1, 100, 2000)
         with pytest.raises(ValueError):
             await backend.retrieve_current(LONG_ID)
+        with pytest.raises(ValueError):
+            await backend.retrieve_current("")
         with pytest.raises(ValueError):
             await backend.touch("s1", [LONG_KEYWORD])
         with pytest.raises(ValueError):

@@ -99,6 +99,10 @@ class MemoryVault:
         )
 
     async def retrieve(self, session_id: str, user_input: str, limit: int = 3) -> list:
+        # Legacy contract (tests/test_failsafe.py::test_isolation): reading with a
+        # falsy session id returns no facts instead of raising. Writes stay strict.
+        if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
+            return []
         validate_session_id(session_id)
         await self._ensure_initialized()
         rows = await self._backend.retrieve_current(session_id, limit=100)
