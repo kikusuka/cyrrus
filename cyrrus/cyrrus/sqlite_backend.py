@@ -11,7 +11,7 @@ import os
 from typing import List, Dict, Any
 import asyncio
 import threading
-from .backend import MemoryBackend
+from .backend import MemoryBackend, validate_session_id, validate_keyword
 
 
 log = logging.getLogger("cyrrus.sqlite_backend")
@@ -237,6 +237,8 @@ class SQLiteBackend(MemoryBackend):
         max_fact_value_length: int
     ) -> None:
         """Store or update a fact for a session with temporal tracking."""
+        validate_session_id(session_id)
+        validate_keyword(keyword)
         # Truncate value if needed
         if value and len(value) > max_fact_value_length:
             log.warning(
@@ -306,6 +308,8 @@ class SQLiteBackend(MemoryBackend):
     
     async def retrieve_current(self, session_id: str, limit: int = 100) -> List[tuple]:
         """Retrieve current facts for a session (invalid_at IS NULL)."""
+        validate_session_id(session_id)
+
         def _retrieve(conn):
             results = conn.execute(
                 "SELECT keyword, value, tokens FROM facts "
@@ -318,6 +322,10 @@ class SQLiteBackend(MemoryBackend):
     
     async def touch(self, session_id: str, keywords: List[str]) -> None:
         """Update last_accessed timestamp for specified facts."""
+        validate_session_id(session_id)
+        for kw in keywords:
+            validate_keyword(kw)
+
         def _touch(conn):
             now = time.time()
             conn.executemany(
@@ -330,6 +338,8 @@ class SQLiteBackend(MemoryBackend):
     
     async def delete_session(self, session_id: str) -> int:
         """Delete all facts for a session."""
+        validate_session_id(session_id)
+
         def _delete(conn):
             cursor = conn.execute(
                 "DELETE FROM facts WHERE session_id=?",
@@ -347,6 +357,9 @@ class SQLiteBackend(MemoryBackend):
         keyword: str
     ) -> List[Dict[str, Any]]:
         """Retrieve the full timeline of a fact."""
+        validate_session_id(session_id)
+        validate_keyword(keyword)
+
         def _history(conn):
             rows = conn.execute(
                 "SELECT value, tokens, valid_at, invalid_at FROM facts "

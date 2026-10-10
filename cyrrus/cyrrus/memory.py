@@ -4,7 +4,7 @@ import os
 import re
 from typing import Optional
 from .data import Slide
-from .backend import MemoryBackend
+from .backend import MemoryBackend, validate_session_id, validate_keyword
 from .sqlite_backend import SQLiteBackend
 from .bm25 import bm25_rank_facts
 
@@ -31,7 +31,7 @@ class MemoryVault:
         self,
         db_path: str = "slides_memory.db",
         max_facts_per_session: int = 500,
-        max_fact_value_length: int = 500,
+        max_fact_value_length: int = 2000,
         embedder: object = None,
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         backend: Optional[MemoryBackend] = None,
@@ -89,6 +89,8 @@ class MemoryVault:
                 raise
 
     async def upsert(self, session_id: str, keyword: str, value: str, tokens: int):
+        validate_session_id(session_id)
+        validate_keyword(keyword)
         await self._ensure_initialized()
         await self._backend.upsert(
             session_id, keyword, value, tokens,
@@ -97,6 +99,7 @@ class MemoryVault:
         )
 
     async def retrieve(self, session_id: str, user_input: str, limit: int = 3) -> list:
+        validate_session_id(session_id)
         await self._ensure_initialized()
         rows = await self._backend.retrieve_current(session_id, limit=100)
         if not rows:
@@ -177,6 +180,7 @@ class MemoryVault:
 
         Returns the number of facts deleted.
         """
+        validate_session_id(session_id)
         await self._ensure_initialized()
         return await self._backend.delete_session(session_id)
 
@@ -187,5 +191,7 @@ class MemoryVault:
         
         Returns a list of dicts with keys: value, tokens, valid_at, invalid_at
         """
+        validate_session_id(session_id)
+        validate_keyword(keyword)
         await self._ensure_initialized()
         return await self._backend.get_fact_history(session_id, keyword)

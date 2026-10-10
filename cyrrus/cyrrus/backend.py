@@ -9,6 +9,34 @@ from typing import List, Dict, Optional, Any
 import asyncio
 
 
+MAX_SESSION_ID_LENGTH = 256
+MAX_KEYWORD_LENGTH = 256
+MAX_FACT_VALUE_LENGTH = 2000
+
+
+def validate_session_id(session_id: str) -> None:
+    """Raise ValueError for empty or over-long session ids."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError(
+            "session_id cannot be empty or whitespace-only. "
+            "Pass a unique identifier per user, e.g. str(user_id)."
+        )
+    if len(session_id) > MAX_SESSION_ID_LENGTH:
+        raise ValueError(
+            f"session_id too long: {len(session_id)} characters "
+            f"(max {MAX_SESSION_ID_LENGTH})."
+        )
+
+
+def validate_keyword(keyword: str) -> None:
+    """Raise ValueError for over-long fact keywords."""
+    if isinstance(keyword, str) and len(keyword) > MAX_KEYWORD_LENGTH:
+        raise ValueError(
+            f"fact keyword too long: {len(keyword)} characters "
+            f"(max {MAX_KEYWORD_LENGTH})."
+        )
+
+
 class MemoryBackend(ABC):
     """
     Abstract interface for memory storage backends.
