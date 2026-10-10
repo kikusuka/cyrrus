@@ -204,6 +204,8 @@ class Projector:
         memory_db_path: str = "slides_memory.db",
         memory_max_facts_per_session: int = 500,
         memory_max_fact_value_length: int = 500,
+        max_memory_facts: int = 5,
+        max_memory_tokens: Optional[int] = None,
         router: object = None,
         memory: object = None,
         knapsack: object = None,
@@ -231,6 +233,8 @@ class Projector:
         self.max_ghost_turns = max_ghost_turns
         self.timeout = timeout
         self.tool_executor_timeout = tool_executor_timeout
+        self.max_memory_facts = max_memory_facts
+        self.max_memory_tokens = max_memory_tokens
         self.tray_factory = tray_factory
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
@@ -471,7 +475,15 @@ class Projector:
         history = await self._get_history(session_id)
 
         candidates, negated_ids = await self.router.route(user_input)
-        memory_slides = await self.memory.retrieve(session_id, user_input, limit=2)
+        # Retrieve more facts than needed, then cap by count and tokens
+        memory_slides = await self.memory.retrieve(session_id, user_input, limit=self.max_memory_facts * 2)
+        
+        # Cap by max_memory_facts (take top N by relevance/retrieval order)
+        memory_slides = memory_slides[:self.max_memory_facts]
+        
+        # Cap by max_memory_tokens if set
+        if self.max_memory_tokens is not None:
+            memory_slides = self.knapsack.pack(memory_slides, self.max_memory_tokens)
 
         trace["routed_slide_ids"] = [s.id for s in candidates]
         trace["negated_slide_ids"] = list(negated_ids)
