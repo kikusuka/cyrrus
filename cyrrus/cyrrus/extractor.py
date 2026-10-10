@@ -123,6 +123,7 @@ _PATTERNS = [
     # Location
     (r"i(?:'m| am) (?:from|in|based in)\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
     (r"i live in\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
+    (r"i moved to\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
 
     # Project — stops at comma so "cyrrus, a library" extracts just "cyrrus"
     (r"i(?:'m| am) (?:building|working on|making|developing|creating)\s+([^,\n]{3,60}?)(?:[.,!?]|$)", "user_project"),
@@ -131,6 +132,7 @@ _PATTERNS = [
     # Preferences
     (r"i (?:prefer|always use|love using|like using)\s+([^.,!?\n]{3,50})", "user_preference"),
     (r"my (?:favorite|preferred)\s+\w+\s+is\s+([^.,!?\n]{2,40})", "user_preference"),
+    (r"i (?:like|love)\s+([^.,!?\n]{3,50})", "user_preference"),
 
     # Language
     (r"i(?:'m| am) (?:learning|using|coding in|writing in)\s+(python|javascript|typescript|rust|go|java|kotlin|swift|c\+\+|ruby|php|elixir)", "user_language"),
