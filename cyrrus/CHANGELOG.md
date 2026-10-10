@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0b3
+
+### Added
+- Input validation: `session_id` and fact keys must be non-empty and at most 256 characters
+  (`ValueError` otherwise); fact values are truncated at 2000 characters.
+- Optional `max_facts_per_session` retention cap; when set, the oldest superseded facts are
+  evicted first, then the oldest active facts.
+
+### Changed
+- `max_facts_per_session` now defaults to unlimited (previously 500).
+  Set it explicitly if you rely on automatic pruning.
+- Default fact value length limit raised from 500 to 2000 characters.
+
 ## 0.3.0b2
 
 ### Fixed
