@@ -16,7 +16,7 @@ Default parameters follow the literature: k1=1.5, b=0.75.
 """
 import math
 import re
-from typing import List, Tuple, Sequence
+from typing import List, Tuple, Sequence, Dict, Set
 
 
 class BM25Ranker:
@@ -155,6 +155,41 @@ class BM25Ranker:
         return list(indices), list(scores_out)
 
 
+KEY_ALIASES: dict = {
+    "location": "live living home city from based moved residence address country place",
+    "name": "name called call identity known who am i",
+    "employer": "work works job company employed organization workplace employer",
+    "workplace": "work works job company employed organization employer office",
+    "job": "work works job position role career employment workplace",
+    "company": "work works job employer business firm workplace organization",
+    "preference": "like love prefer favorite favour want desire choice taste",
+    "language": "speak language code coding programming write speak tongue",
+    "project": "project work building making creating app library repo repository application",
+    "pet": "pet dog cat animal companion puppy kitten",
+    "email": "email mail contact address e-mail inbox",
+    "phone": "phone telephone mobile number cell contact call",
+    "age": "age years old birthday born birth how old",
+    "hobby": "hobby pastime activity enjoy like interest past time recreation",
+}
+
+
+def _expand_keyword_with_aliases(keyword: str) -> str:
+    """
+    Expand a snake_case keyword like "user_location" into a space-separated
+    string containing the keyword tokens plus all known aliases for its
+    semantic head (e.g. "location" -> "live living home city ...").
+
+    This makes BM25 match question-style queries like "where do I live?"
+    against facts whose keyword is user_location.
+    """
+    tokens = keyword.lower().replace("_", " ").split()
+    expanded = list(tokens)
+    for t in tokens:
+        if t in KEY_ALIASES:
+            expanded.extend(KEY_ALIASES[t].split())
+    return " ".join(expanded)
+
+
 def bm25_rank_facts(
     facts: Sequence[Tuple[str, str, int]],
     user_input: str,
@@ -165,8 +200,9 @@ def bm25_rank_facts(
     Convenience helper: rank a list of memory facts using BM25.
 
     Each fact is a tuple (keyword, value, tokens). Each document is built
-    as "keyword: value" so that the keyword carries weight, matching the
-    semantic retrieval convention already in MemoryVault.
+    as "{expanded_keyword_with_aliases} : value" so that question-style
+    queries (e.g. "where do I live?") match facts whose keyword is
+    something like user_location (via the "location" alias set).
 
     Returns a list of (score, keyword, value, tokens) sorted by score
     descending, truncated to `limit` entries and filtered by
@@ -175,14 +211,14 @@ def bm25_rank_facts(
     if not facts:
         return []
 
-    # Build documents as "keyword: value" text.
+    # Build documents: "expanded_keyword : value" so aliases boost recall
     documents = []
     for kw, val, _tok in facts:
-        kw_text = kw.replace("_", " ")
+        kw_expanded = _expand_keyword_with_aliases(kw)
         if val:
-            documents.append(f"{kw_text}: {val}")
+            documents.append(f"{kw_expanded} : {val}")
         else:
-            documents.append(kw_text)
+            documents.append(kw_expanded)
 
     ranker = BM25Ranker(documents)
     indices, scores = ranker.top_k(user_input, k=max(limit, len(facts)),
