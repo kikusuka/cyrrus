@@ -211,6 +211,7 @@ class Projector:
         knapsack: object = None,
         tray_factory: callable = None,
         tool_executor_timeout: float = 5.0,
+        tokenizer: Optional[object] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -236,6 +237,7 @@ class Projector:
         self.max_memory_facts = max_memory_facts
         self.max_memory_tokens = max_memory_tokens
         self.tray_factory = tray_factory
+        self.tokenizer = tokenizer
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
         self._session_locks = SessionLocks()  # per-session locking for tray mutations
@@ -267,6 +269,16 @@ class Projector:
         self.last_stats = {}
         self.last_trace = {}
         self.trace_log = deque(maxlen=trace_log_size)
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count for *text* using the configured tokenizer, or
+        fall back to the default word-split estimator when tokenizer is None."""
+        if self.tokenizer is not None:
+            if callable(self.tokenizer):
+                return self.tokenizer(text)
+            # Object with .encode(text) method
+            return len(self.tokenizer.encode(text))
+        return len(text.split())
 
     @classmethod
     def minimal(cls, llm_call: callable, persona: str = "You are a helpful assistant.", **kwargs):
@@ -503,7 +515,7 @@ class Projector:
             0,
             self.max_context_tokens
             - self.lamp.tokens
-            - len(user_input.split())
+            - self._estimate_tokens(user_input)
             - tool_output_reserve
             - 150
         )

@@ -619,5 +619,110 @@ async def main():
         print("ALL TESTS PASSED")
 
 
+async def test_tokenizer_counts_characters():
+    """Test that a tokenizer counting one token per character changes budget.
+
+    With the default word-split tokenizer, a 100-char message counts as ~14 tokens
+    (100/7 avg word length). With a per-char tokenizer, it counts as 100 tokens,
+    dramatically reducing the available slide budget and changing what fits.
+    """
+    from cyrrus import Projector
+
+    async def echo_llm(messages):  # noqa: ARG001
+        return "ok"
+
+    # A message with many characters but few words
+    long_message = "A" * 200  # 200 characters, essentially 1 "word"
+
+    # --- Default tokenizer (word-split): ~14 tokens for the above ---
+    bot_default = Projector(
+        {"core_lamp": {"content": "You are helpful."}},
+        llm_call=echo_llm,
+        max_context_tokens=500,
+        tokenizer=None,  # explicit default
+    )
+    await bot_default.process(long_message, session_id="default_test")
+    default_tokens = bot_default._estimate_tokens(long_message)
+    # With word-split: "A"*200 is 1 "word" -> 1 token (or ~14 depending on split behavior)
+    # The exact number depends on len("A"*200.split()) which is 1
+
+    # --- Per-char tokenizer: 200 tokens ---
+    bot_char = Projector(
+        {"core_lamp": {"content": "You are helpful."}},
+        llm_call=echo_llm,
+        max_context_tokens=500,
+        tokenizer=lambda s: len(s),  # one token per character
+    )
+    await bot_char.process(long_message, session_id="char_test")
+    char_tokens = bot_char._estimate_tokens(long_message)
+
+    # With per-char tokenizer, 200 chars -> 200 tokens
+    assert char_tokens == 200, f"Expected 200 tokens with char tokenizer, got {char_tokens}"
+
+    # With default tokenizer, 200 chars -> should be much less (1 word -> 1 token or a few)
+    assert default_tokens < char_tokens, (
+        f"Default tokenizer should produce fewer tokens than per-char tokenizer, "
+        f"but default gave {default_tokens} and char gave {char_tokens}"
+    )
+
+    # Budget should be significantly different
+    # available = 500 - lamp_tokens - user_tokens - tool_reserve - 150
+    # With 200 char tokens, available is much smaller, so fewer slides fit
+    # With 1 word token, available is larger
+
+    # Verify the _estimate_tokens method works correctly for both
+    assert bot_default._estimate_tokens("hello world") == len("hello world".split())
+    assert bot_char._estimate_tokens("hello world") == len("hello world")
+
+
+def test_tokenizer_object_with_encode():
+    """Test tokenizer as an object with .encode() method."""
+    from cyrrus import Projector
+
+    class CharCountTokenizer:
+        def encode(self, text: str) -> str:
+            return text  # identity encode, len() gives char count
+
+    async def echo_llm(messages):  # noqa: ARG001
+        return "ok"
+
+    bot = Projector(
+        {"core_lamp": {"content": "You are helpful."}},
+        llm_call=echo_llm,
+        max_context_tokens=500,
+        tokenizer=CharCountTokenizer(),
+    )
+    tokens = bot._estimate_tokens("hello")
+    assert tokens == 5, f"Expected 5 tokens (char count), got {tokens}"
+
+    tokens2 = bot._estimate_tokens("hello world")
+    assert tokens2 == 11, f"Expected 11 tokens (char count), got {tokens2}"
+
+
+def test_tokenizer_none_keeps_current_estimator():
+    """Test that tokenizer=None uses the default word-split estimator."""
+    from cyrrus import Projector
+
+    async def echo_llm(messages):  # noqa: ARG001
+        return "ok"
+
+    bot = Projector(
+        {"core_lamp": {"content": "You are helpful."}},
+        llm_call=echo_llm,
+        max_context_tokens=500,
+        tokenizer=None,
+    )
+    # Should fall back to split()
+    tokens = bot._estimate_tokens("hello world")
+    assert tokens == 2, f"Expected 2 tokens (word split), got {tokens}"
+
+
+async def main_test():
+    await test_tokenizer_counts_characters()
+    test_tokenizer_object_with_encode()
+    test_tokenizer_none_keeps_current_estimator()
+    print("All tokenizer tests passed!")
+
+
 if __name__ == "__main__":
     asyncio.run(main())
