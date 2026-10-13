@@ -793,6 +793,93 @@ async def test_snapshot_system_message():
     )
 
 
+async def test_custom_renderer_reaches_provider():
+    """A custom renderer's output becomes the system message.
+
+    The renderer receives a dict {"slides": [...], "ghosts": [...],
+    "facts": [...], "base_system": str} and must return a string that
+    is used as the system message content.
+    """
+    from cyrrus import Projector
+
+    async def echo_llm(messages):  # noqa: ARG001
+        return "ok"
+
+    config = {
+        "core_lamp": {"content": "You are helpful."},
+        "code_lens": {
+            "content": "Output only code.",
+            "triggers": ["code", "script"],
+        },
+    }
+
+    def my_renderer(data):
+        slides = data["slides"]
+        ghosts = data["ghosts"]
+        facts = data["facts"]
+        base = data["base_system"]
+        parts = [base]
+        if slides:
+            parts.append(" ".join(s.content for s in slides))
+        if ghosts:
+            parts.append(" ".join("(ghost)" for _ in ghosts))
+        if facts:
+            kv = "; ".join(f.content.strip()[:10] for f in facts if f.content)
+            parts.append(f"facts: {kv}")
+        return "\n".join(parts)
+
+    bot = Projector(config, llm_call=echo_llm, max_context_tokens=800, renderer=my_renderer)
+    await bot.process("write a python script", session_id="test")
+    msgs = bot.last_trace["messages"]
+    sys_msg = next((m["content"] for m in msgs if m["role"] == "system"), None)
+    got = sys_msg
+    expected = "You are helpful.\nOutput only code."
+    assert got == expected, (
+        f"Custom renderer output mismatch.\n  got:      {got!r}\n  expected: {expected!r}"
+    )
+
+
+def test_compact_renderer():
+    """The built-in compact renderer produces a terse system message.
+
+    Expected format: "facts: key=value; key=value" when there are fact slides,
+    otherwise just the base_system lamp content.
+    """
+    from cyrrus import compact
+
+    # Empty facts -> just the lamp content
+    data = {
+        "slides": [],
+        "ghosts": [],
+        "facts": [],
+        "base_system": "You are helpful.",
+    }
+    assert compact(data) == "You are helpful.", (
+        f"Expected 'You are helpful.', got {compact(data)!r}"
+    )
+
+    # With fact slides - use dicts instead of Slide objects
+    # The compact function accesses .content on fact items
+    class FakeSlide:
+        def __init__(self, content):
+            self.content = content
+
+    fact_slides = [
+        FakeSlide("About the user: name=Alice"),
+        FakeSlide("About the user: city=Lisbon"),
+    ]
+    data2 = {
+        "slides": [],
+        "ghosts": [],
+        "facts": fact_slides,
+        "base_system": "You are helpful.",
+    }
+    result = compact(data2)
+    assert "facts:" in result, f"Expected 'facts:' in result, got {result!r}"
+    assert "name=Alice" in result, f"Expected 'name=Alice' in result, got {result!r}"
+    assert "city=Lisbon" in result, f"Expected 'city=Lisbon' in result, got {result!r}"
+
+
 if __name__ == "__main__":
     import asyncio
 
@@ -801,6 +888,8 @@ if __name__ == "__main__":
         test_tokenizer_object_with_encode()
         test_tokenizer_none_keeps_current_estimator()
         await test_snapshot_system_message()
-        print("All tokenizer tests passed!")
+        await test_custom_renderer_reaches_provider()
+        test_compact_renderer()
+        print("All tokenizer and renderer tests passed!")
 
     asyncio.run(run())

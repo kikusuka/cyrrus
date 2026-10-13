@@ -13,6 +13,7 @@ from .providers import StreamChunk
 from . import providers
 from .backend import MemoryBackend
 from .sqlite_backend import SQLiteBackend, get_backend, close_backend
+from .renderers import compact
 
 __version__ = "0.3.0b3"
 
@@ -38,5 +39,6 @@ __all__ = [
     "get_backend",
     "close_backend",
     "estimate_tokens",
+    "compact",
     "__version__",
 ]

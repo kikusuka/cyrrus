@@ -212,6 +212,7 @@ class Projector:
         tray_factory: callable = None,
         tool_executor_timeout: float = 5.0,
         tokenizer: Optional[object] = None,
+        renderer: Optional[object] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -238,6 +239,7 @@ class Projector:
         self.max_memory_tokens = max_memory_tokens
         self.tray_factory = tray_factory
         self.tokenizer = tokenizer
+        self.renderer = renderer
         self.trays = {}
         self._histories = {}  # session_id -> deque of {role, content} dicts
         self._session_locks = SessionLocks()  # per-session locking for tray mutations
@@ -279,6 +281,43 @@ class Projector:
             # Object with .encode(text) method
             return len(self.tokenizer.encode(text))
         return len(text.split())
+
+    def _render_system(self, ordered, lamp_content: str) -> str:
+        """Render the system message.
+
+        If a custom renderer was configured (via renderer=), call it with a
+        dict describing the slide state and return its string result.
+        Otherwise fall back to the default system‑message construction."""
+        if self.renderer is not None and callable(self.renderer):
+            slides = [s for s in ordered if s.type != "memory"]
+            ghosts = [s for s in ordered if getattr(s, "is_ghost", False)]
+            facts = [s for s in ordered if s.type == "memory"]
+            base_system = lamp_content
+            return self.renderer({
+                "slides": slides,
+                "ghosts": ghosts,
+                "facts": facts,
+                "base_system": base_system,
+            })
+
+        # Default rendering — same logic as before the renderer was added
+        system_parts = [lamp_content]
+
+        context_slides = [s for s in ordered if s.type not in ("memory",)]
+        if context_slides:
+            system_parts.append("")  # blank line separator
+            for slide in context_slides:
+                ghost_note = " (fading — mentioned recently)" if getattr(slide, "is_ghost", False) else ""
+                system_parts.append(f"{slide.content}{ghost_note}")
+
+        memory_slides_final = [s for s in ordered if s.type == "memory"]
+        if memory_slides_final:
+            system_parts.append("")
+            for slide in memory_slides_final:
+                raw = slide.content.removeprefix("Fact: ").strip()
+                system_parts.append(f"About the user: {raw}")
+
+        return "\n".join(system_parts)
 
     @classmethod
     def minimal(cls, llm_call: callable, persona: str = "You are a helpful assistant.", **kwargs):
@@ -592,26 +631,9 @@ class Projector:
                     tool_trace.append({"tool": slide.id, "status": "failed", "error": repr(e)})
         trace["tool_calls"] = tool_trace
 
-        # Build the system message.
-        # Lamp first, then non-memory context, then memory facts.
-        system_parts = [self.lamp.content]
-
-        context_slides = [s for s in ordered if s.type not in ("memory",)]
-        if context_slides:
-            system_parts.append("")  # blank line separator
-            for slide in context_slides:
-                ghost_note = " (fading — mentioned recently)" if slide.is_ghost else ""
-                system_parts.append(f"{slide.content}{ghost_note}")
-
-        memory_slides_final = [s for s in ordered if s.type == "memory"]
-        if memory_slides_final:
-            system_parts.append("")
-            for slide in memory_slides_final:
-                # "Fact: Muratha" -> "The user's name is Muratha" reads better
-                raw = slide.content.removeprefix("Fact: ").strip()
-                system_parts.append(f"About the user: {raw}")
-
-        system_content = "\n".join(system_parts)
+        # Build the system message — delegate to renderer if configured,
+        # otherwise use the default construction.
+        system_content = self._render_system(ordered, self.lamp.content)
 
         # Build the full messages array.
         # System message is rebuilt fresh each turn with current context.
