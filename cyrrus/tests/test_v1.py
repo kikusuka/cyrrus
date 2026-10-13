@@ -724,5 +724,83 @@ async def main_test():
     print("All tokenizer tests passed!")
 
 
+async def test_snapshot_system_message():
+    """Snapshot test: record the current system-message output for 5 cases.
+
+    These exact strings reflect the Projector's system message construction
+    as of this commit.  Changing the projector logic (lamp content, slide
+    routing, memory injection, ghost handling) will cause these asserts to
+    fail — which is the point of a snapshot.
+    """
+    from cyrrus import Projector
+
+    async def echo_llm(messages):  # noqa: ARG001
+        return "ok"
+
+    config = {
+        "core_lamp": {"content": "You are helpful."},
+        "code_lens": {
+            "content": "Output only code.",
+            "triggers": ["code", "script"],
+        },
+    }
+
+    # ── Case 1: slides only ────────────────────────────────────────────
+    b1 = Projector(config, llm_call=echo_llm, max_context_tokens=800)
+    await b1.process("write a python script", session_id="s1")
+    got1 = next(m["content"] for m in b1.last_trace["messages"] if m["role"] == "system")
+    expected1 = "You are helpful.\n\nOutput only code."
+    assert got1 == expected1, (
+        f"Case 1 slides only mismatch.\n  got:      {got1!r}\n  expected: {expected1!r}"
+    )
+
+    # ── Case 2: slides plus a ghost slide ──────────────────────────────
+    await b1.process("hello", session_id="s1")
+    await b1.process("write a python script", session_id="s1")
+    got2 = next(m["content"] for m in b1.last_trace["messages"] if m["role"] == "system")
+    expected2 = "You are helpful.\n\nOutput only code."
+    assert got2 == expected2, (
+        f"Case 2 slides+ghost mismatch.\n  got:      {got2!r}\n  expected: {expected2!r}"
+    )
+
+    # ── Case 3: memory facts only ──────────────────────────────────────
+    b2 = Projector(config, llm_call=echo_llm, max_context_tokens=800)
+    await b2.memory.upsert("test", "user_name", "Alice", 5)
+    await b2.process("what is my name", session_id="s1")
+    got3 = next(m["content"] for m in b2.last_trace["messages"] if m["role"] == "system")
+    expected3 = "You are helpful."
+    assert got3 == expected3, (
+        f"Case 3 memory facts only mismatch.\n  got:      {got3!r}\n  expected: {expected3!r}"
+    )
+
+    # ── Case 4: slides, ghost and facts together ───────────────────────
+    b3 = Projector(config, llm_call=echo_llm, max_context_tokens=800)
+    await b3.memory.upsert("test", "fav_color", "blue", 3)
+    await b3.process("what is my favorite color", session_id="s1")
+    got4 = next(m["content"] for m in b3.last_trace["messages"] if m["role"] == "system")
+    expected4 = "You are helpful."
+    assert got4 == expected4, (
+        f"Case 4 slides+ghost+facts mismatch.\n  got:      {got4!r}\n  expected: {expected4!r}"
+    )
+
+    # ── Case 5: nothing routed ────────────────────────────────────────
+    b4 = Projector(config, llm_call=echo_llm, max_context_tokens=800)
+    await b4.process("random harmless text", session_id="s1")
+    got5 = next(m["content"] for m in b4.last_trace["messages"] if m["role"] == "system")
+    expected5 = "You are helpful."
+    assert got5 == expected5, (
+        f"Case 5 nothing routed mismatch.\n  got:      {got5!r}\n  expected: {expected5!r}"
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+
+    async def run():
+        await test_tokenizer_counts_characters()
+        test_tokenizer_object_with_encode()
+        test_tokenizer_none_keeps_current_estimator()
+        await test_snapshot_system_message()
+        print("All tokenizer tests passed!")
+
+    asyncio.run(run())
