@@ -635,6 +635,52 @@ class Projector:
         # otherwise use the default construction.
         system_content = self._render_system(ordered, self.lamp.content)
 
+        # Build the context decision trace — add keys to the trace dict
+        # so they're preserved through _process_inner → _record_trace.
+        routed = []
+        for sid in trace.get("routed_slide_ids", []):
+            # Find the slide object to identify it.
+            for slide in ordered:
+                if slide.id == sid:
+                    routed.append({"id": sid, "trigger": ""})
+                    break
+
+        # "ghosts": slides carried over from prior turns, with age.
+        tray = await self._get_tray(session_id)
+        ghosts = []
+        for s in tray.ghosts:
+            age = getattr(s, "age", 0)
+            ghosts.append({"id": s.id, "age": age})
+
+        # "facts": facts injected during this turn, with key/value/score.
+        facts = []
+        if self.memory and self.fact_extractor:
+            # Collect facts from the memory vault that were added this turn.
+            # The memory vault stores facts with key, value, and relevance score.
+            try:
+                # Access the underlying database to list recent facts.
+                import sqlite3
+                db_path = self.memory.db_path
+                if db_path and asyncio.os.path.exists(db_path):
+                    with sqlite3.connect(db_path) as conn:
+                        rows = conn.execute(
+                            "SELECT keyword, value, relevance FROM facts "
+                            "WHERE session_id=? ORDER BY rowid DESC LIMIT 20",
+                            (session_id,),
+                        ).fetchall()
+                        for keyword, value, relevance in rows:
+                            facts.append({"key": keyword, "value": value, "score": relevance})
+            except Exception:
+                pass
+
+        # "system_message": the final rendered system message.
+        # "dropped": empty list for now (reserved for future use).
+        trace["routed"] = routed
+        trace["ghosts"] = ghosts
+        trace["facts"] = facts
+        trace["system_message"] = system_content
+        trace["dropped"] = []
+
         # Build the full messages array.
         # System message is rebuilt fresh each turn with current context.
         # History carries the actual conversation so follow-ups work.
