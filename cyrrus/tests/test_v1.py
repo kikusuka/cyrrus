@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import sys
-from cyrrus import Projector
+from cyrrus.cyrrus import Projector
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "slides.json")
 TEST_DB = "test_slides_memory.db"
@@ -399,7 +399,7 @@ async def test_max_active_turns_configurable():
     async def llm(m): return "ok"
     import tempfile, os
     tmp = tempfile.mktemp(suffix=".db")
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
     p = Projector(minimal_config, llm_call=llm, max_active_turns=1,
                   memory_db_path=tmp)
     await p.process("testword", session_id="u")
@@ -626,7 +626,7 @@ async def test_tokenizer_counts_characters():
     (100/7 avg word length). With a per-char tokenizer, it counts as 100 tokens,
     dramatically reducing the available slide budget and changing what fits.
     """
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -677,7 +677,7 @@ async def test_tokenizer_counts_characters():
 
 def test_tokenizer_object_with_encode():
     """Test tokenizer as an object with .encode() method."""
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
 
     class CharCountTokenizer:
         def encode(self, text: str) -> str:
@@ -701,7 +701,7 @@ def test_tokenizer_object_with_encode():
 
 def test_tokenizer_none_keeps_current_estimator():
     """Test that tokenizer=None uses the default word-split estimator."""
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -732,7 +732,7 @@ async def test_snapshot_system_message():
     routing, memory injection, ghost handling) will cause these asserts to
     fail — which is the point of a snapshot.
     """
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -800,7 +800,7 @@ async def test_custom_renderer_reaches_provider():
     "facts": [...], "base_system": str} and must return a string that
     is used as the system message content.
     """
-    from cyrrus import Projector
+    from cyrrus.cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -880,6 +880,75 @@ def test_compact_renderer():
     assert "city=Lisbon" in result, f"Expected 'city=Lisbon' in result, got {result!r}"
 
 
+def test_over_token_budget_drop():
+    """Test that slides not fitting the budget are tracked as "over token budget".
+
+    Trigger: Provide input that generates many candidates exceeding the knapsack budget.
+    """
+    async def inner():
+        pipeline = fresh_pipeline(max_context_tokens=100)
+        await pipeline.process(
+            "write a python script about code and scripts and programming", session_id="token_budget_test"
+        )
+        dropped = pipeline.last_trace.get("dropped", [])
+        over_budget = [d for d in dropped if d.get("reason") == "over token budget"]
+        assert len(over_budget) > 0, f"Expected over token budget drops, got {dropped}"
+
+    asyncio.run(inner())
+
+
+def test_over_fact_cap_drop():
+    """Test that facts cut by max_memory_facts are tracked as "over fact cap".
+
+    Trigger: Set max_memory_facts to a small number and upsert many facts.
+    """
+    async def inner():
+        pipeline = fresh_pipeline(max_context_tokens=800, max_memory_facts=2)
+        await pipeline.memory.upsert("fact_cap_test", "fact_a", "value a", 1)
+        await pipeline.memory.upsert("fact_cap_test", "fact_b", "value b", 1)
+        await pipeline.memory.upsert("fact_cap_test", "fact_c", "value c", 1)
+        await pipeline.process("test fact cap", session_id="fact_cap_test")
+        dropped = pipeline.last_trace.get("dropped", [])
+        over_cap = [d for d in dropped if d.get("reason") == "over fact cap"]
+        assert len(over_cap) > 0, f"Expected over fact cap drops, got {dropped}"
+
+    asyncio.run(inner())
+
+
+def test_below_threshold_drop():
+    """Test that facts retrieved but under the score threshold are tracked as "below threshold".
+
+    Trigger: Retrieve facts with low relevance scores below the threshold.
+    """
+    async def inner():
+        pipeline = fresh_pipeline(max_context_tokens=800)
+        # Add facts with very low relevance
+        await pipeline.memory.upsert("threshold_test", "fact_low", "low relevance fact", 0.1)
+        await pipeline.process("test threshold", session_id="threshold_test")
+        dropped = pipeline.last_trace.get("dropped", [])
+        below_thresh = [d for d in dropped if d.get("reason") == "below threshold"]
+        assert len(below_thresh) > 0, f"Expected below threshold drops, got {dropped}"
+
+    asyncio.run(inner())
+
+
+def test_ghost_expired_drop():
+    """Test that ghost slides evicted from the tray are tracked as "ghost expired".
+
+    Trigger: Have ghosts in the tray that get evicted due to budget constraints.
+    """
+    async def inner():
+        pipeline = fresh_pipeline(max_context_tokens=100, max_active_turns=1)
+        # Process multiple turns to trigger ghost eviction
+        await pipeline.process("first turn", session_id="ghost_test")
+        await pipeline.process("second turn", session_id="ghost_test")
+        dropped = pipeline.last_trace.get("dropped", [])
+        ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
+        assert len(ghost_expired) > 0, f"Expected ghost expired drops, got {dropped}"
+
+    asyncio.run(inner())
+
+
 if __name__ == "__main__":
     import asyncio
 
@@ -890,6 +959,11 @@ if __name__ == "__main__":
         await test_snapshot_system_message()
         await test_custom_renderer_reaches_provider()
         test_compact_renderer()
+        # New drop reason tests
+        await test_over_token_budget_drop()
+        await test_over_fact_cap_drop()
+        await test_below_threshold_drop()
+        await test_ghost_expired_drop()
         print("All tokenizer and renderer tests passed!")
 
     asyncio.run(run())

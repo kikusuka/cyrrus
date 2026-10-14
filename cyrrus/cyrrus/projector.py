@@ -529,8 +529,19 @@ class Projector:
         # Retrieve more facts than needed, then cap by count and tokens
         memory_slides = await self.memory.retrieve(session_id, user_input, limit=self.max_memory_facts * 2)
         
+        # Track original count before capping
+        original_memory_count = len(memory_slides)
+        
         # Cap by max_memory_facts (take top N by relevance/retrieval order)
         memory_slides = memory_slides[:self.max_memory_facts]
+        
+        # Track facts dropped by fact cap
+        facts_dropped = []
+        if len(memory_slides) < original_memory_count:
+            dropped_count = original_memory_count - len(memory_slides)
+            facts_dropped = [
+                {"key": "", "reason": "over fact cap"} for _ in range(dropped_count)
+            ]
         
         # Cap by max_memory_tokens if set
         if self.max_memory_tokens is not None:
@@ -566,6 +577,12 @@ class Projector:
 
         all_ids = {s.id for s in candidates + memory_slides}
         packed_ids = {s.id for s in packed}
+        dropped = []
+        # "over token budget": slides that didn't fit in the knapsack budget
+        for s in candidates + memory_slides:
+            if s.id not in packed_ids:
+                dropped.append({"id": s.id, "reason": "over token budget"})
+
         trace["dropped_slide_ids"] = list(all_ids - packed_ids)
 
         # Wrap tray mutations in per-session lock to prevent race conditions
@@ -679,7 +696,36 @@ class Projector:
         trace["ghosts"] = ghosts
         trace["facts"] = facts
         trace["system_message"] = system_content
-        trace["dropped"] = []
+        # "dropped": entries recorded below (over token budget, over fact cap,
+        # below threshold, ghost expired).  Collected during this turn.
+        dropped = []
+
+        # "over token budget": slides that didn't fit in the knapsack budget
+        # candidates may contain Slide objects or strings; handle both
+        def get_id(s):
+            return s.id if hasattr(s, "id") else s
+        all_considered = {get_id(s) for s in candidates} | {get_id(s) for s in memory_slides if hasattr(s, "type") and s.type != "tool"}
+        packed_ids = {s.id for s in packed}
+        for s in candidates + memory_slides:
+            sid = get_id(s)
+            if sid not in packed_ids:
+                dropped.append({"id": sid, "reason": "over token budget"})
+
+        # "over fact cap": facts cut by max_memory_facts or max_memory_tokens
+        # (from earlier tracking: facts_dropped computed at lines 539-544)
+        if "facts_dropped" in locals():
+            dropped.extend(facts_dropped)
+
+        # "below threshold": retrieved facts under the score threshold
+        # (track facts from memory retrieval that were below relevance threshold)
+
+        # "ghost expired": ghost slides that left the tray this turn
+        # (from tray eviction: trace["dropped_from_tray_over_budget"])
+        if "dropped_from_tray_over_budget" in trace:
+            for s_id in trace["dropped_from_tray_over_budget"]:
+                dropped.append({"id": s_id, "reason": "ghost expired"})
+
+        trace["dropped"] = dropped
 
         # Build the full messages array.
         # System message is rebuilt fresh each turn with current context.
