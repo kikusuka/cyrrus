@@ -17,9 +17,8 @@ class MemoryVault:
     whatever the user just said.
 
     Retrieval has two modes:
-    - Semantic (default when embeddings are available): understands meaning,
-      so "what am I working on" finds a fact stored as "user_project: cyrrus".
-    - Keyword fallback: word overlap scoring, used when fastembed isn't installed.
+    - Keyword (default): BM25 word overlap scoring.
+    - Semantic (opt-in): pass embedder= or embedding_model= to use fastembed.
 
     Pass an embedder to use semantic retrieval without loading a second model:
 
@@ -33,7 +32,7 @@ class MemoryVault:
         max_facts_per_session: Optional[int] = None,
         max_fact_value_length: int = 2000,
         embedder: object = None,
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        embedding_model: Optional[str] = None,
         backend: Optional[MemoryBackend] = None,
     ):
         self.max_facts_per_session = max_facts_per_session
@@ -41,9 +40,12 @@ class MemoryVault:
         self._embedder = embedder
         self._np = None
 
+        # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
+        # Only load an embedding model if the caller explicitly passes
+        # embedder= or embedding_model=.
         if embedder is not None:
             self._try_load_numpy()
-        else:
+        elif embedding_model is not None:
             self._try_load_embedder(embedding_model)
 
         # Use provided backend or default to SQLite (singleton per DB path)
