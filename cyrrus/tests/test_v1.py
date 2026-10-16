@@ -67,9 +67,7 @@ def fresh_pipeline(**kwargs):
         fact_extractor=fact_extractor,
     )
     defaults.update(kwargs)
-    p = Projector(**defaults)
-    p.memory.db_path = TEST_DB
-    # Initialize the backend (async, but we're in sync context - will lazy-init on first operation)
+    p = Projector(**defaults, memory_db_path=TEST_DB)
     return p
 
 
@@ -467,7 +465,7 @@ async def test_memory_cap_configurable():
     await pipeline.memory.upsert("cap_test", "fact_a", "value a", 2)
     await pipeline.memory.upsert("cap_test", "fact_b", "value b", 2)
     await pipeline.memory.upsert("cap_test", "fact_c", "value c", 2)
-    with sqlite3.connect(pipeline.memory.db_path) as conn:
+    with sqlite3.connect(pipeline.memory._backend.db_path) as conn:
         count = conn.execute(
             "SELECT COUNT(*) FROM facts WHERE session_id=?", ("cap_test",)
         ).fetchone()[0]
@@ -480,7 +478,7 @@ async def test_fact_value_length_cap():
     pipeline = fresh_pipeline(memory_max_fact_value_length=50)
     huge_value = "word " * 200  # 1000 chars, way over the 50-char cap
     await pipeline.memory.upsert("length_test", "big_fact", huge_value, 200)
-    with sqlite3.connect(pipeline.memory.db_path) as conn:
+    with sqlite3.connect(pipeline.memory._backend.db_path) as conn:
         stored_value = conn.execute(
             "SELECT value FROM facts WHERE session_id=? AND keyword=?",
             ("length_test", "big_fact")
@@ -490,7 +488,7 @@ async def test_fact_value_length_cap():
 
     small_value = "short fact"
     await pipeline.memory.upsert("length_test", "small_fact", small_value, 2)
-    with sqlite3.connect(pipeline.memory.db_path) as conn:
+    with sqlite3.connect(pipeline.memory._backend.db_path) as conn:
         stored_small = conn.execute(
             "SELECT value FROM facts WHERE session_id=? AND keyword=?",
             ("length_test", "small_fact")
@@ -512,7 +510,7 @@ async def test_wal_mode_enabled():
     """
     import sqlite3
     pipeline = fresh_pipeline()
-    with sqlite3.connect(pipeline.memory.db_path) as conn:
+    with sqlite3.connect(pipeline.memory._backend.db_path) as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     check("WAL mode is active on the memory database (measured ~2-3x "
           "concurrent-latency improvement over the default journal mode)",
@@ -978,7 +976,7 @@ def test_eviction_over_token_budget_not_ghost_expired():
     asyncio.run(inner())
 
 
-def test_embeddings_are_opt_in():
+def test_embeddings_are_opt_in(monkeypatch):
     """Embeddings are NOT loaded by default even if fastembed is installed.
     
     Retrieval defaults to keyword (BM25).  Callers must pass embedder= or
@@ -999,6 +997,7 @@ def test_embeddings_are_opt_in():
 
     fake_fastembed.TextEmbedding = FakeTextEmbedding
     sys.modules["fastembed"] = fake_fastembed
+    monkeypatch.setitem(sys.modules, "numpy", types.ModuleType("numpy"))
 
     try:
         # Default: no embedder passed -> _embedder must be None even though
