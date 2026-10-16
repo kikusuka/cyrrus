@@ -845,7 +845,7 @@ def test_compact_renderer():
     Expected format: "facts: key=value; key=value" when there are fact slides,
     otherwise just the base_system lamp content.
     """
-    from cyrrus import compact
+    from cyrrus.cyrrus import compact
 
     # Empty facts -> just the lamp content
     data = {
@@ -922,8 +922,11 @@ def test_below_threshold_drop():
     """
     async def inner():
         pipeline = fresh_pipeline(max_context_tokens=800)
-        # Add facts with very low relevance
-        await pipeline.memory.upsert("threshold_test", "fact_low", "low relevance fact", 0.1)
+        # Force keyword retrieval (no semantic model) so BM25 score = 0 for unrelated facts
+        pipeline.memory._embedder = None
+        pipeline.memory._np = None
+        # Add facts with truly unrelated content (low semantic similarity)
+        await pipeline.memory.upsert("threshold_test", "fact_low", "xyzzy nothing abracadabra", 1)
         await pipeline.process("test threshold", session_id="threshold_test")
         dropped = pipeline.last_trace.get("dropped", [])
         below_thresh = [d for d in dropped if d.get("reason") == "below threshold"]
@@ -935,13 +938,15 @@ def test_below_threshold_drop():
 def test_ghost_expired_drop():
     """Test that ghost slides evicted from the tray are tracked as "ghost expired".
 
-    Trigger: Have ghosts in the tray that get evicted due to budget constraints.
+    Trigger: Route a slide on turn 1, then use a long input on turn 2 that
+    leaves no budget, causing the tray slide to be evicted.
     """
     async def inner():
-        pipeline = fresh_pipeline(max_context_tokens=100, max_active_turns=1)
-        # Process multiple turns to trigger ghost eviction
-        await pipeline.process("first turn", session_id="ghost_test")
-        await pipeline.process("second turn", session_id="ghost_test")
+        pipeline = fresh_pipeline(max_context_tokens=204, max_active_turns=1)
+        # Turn 1: route code_lens slide, gets packed into tray
+        await pipeline.process("write a python script", session_id="ghost_test")
+        # Turn 2: long input leaves no budget, slide evicted from tray
+        await pipeline.process("a very long sentence with many words taking up lots of tokens", session_id="ghost_test")
         dropped = pipeline.last_trace.get("dropped", [])
         ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
         assert len(ghost_expired) > 0, f"Expected ghost expired drops, got {dropped}"

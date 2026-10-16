@@ -141,6 +141,13 @@ class MemoryVault:
             norms[norms == 0] = 1e-9
             scores = fact_embs.dot(query_emb) / norms
 
+            # Track dropped facts (below threshold - score < 0.2)
+            self._last_retrieve_dropped_below_threshold = []
+            for idx, score in enumerate(scores):
+                if score < 0.2:
+                    kw, val, tok = rows[idx]
+                    self._last_retrieve_dropped_below_threshold.append({"key": kw, "reason": "below threshold"})
+
             ranked = sorted(
                 enumerate(scores), key=lambda x: x[1], reverse=True
             )[:limit]
@@ -165,6 +172,14 @@ class MemoryVault:
 
     def _keyword_retrieve(self, rows: list, user_input: str, limit: int) -> list:
         ranked = bm25_rank_facts(rows, user_input, limit=limit, score_threshold=0.0)
+        included_kws = {kw for _, kw, _, _ in ranked}
+        
+        # Track dropped facts (below threshold - score <= 0)
+        self._last_retrieve_dropped_below_threshold = []
+        for kw, val, tok in rows:
+            if kw not in included_kws:
+                self._last_retrieve_dropped_below_threshold.append({"key": kw, "reason": "below threshold"})
+        
         return [
             Slide(
                 id=f"mem_{kw}",

@@ -717,7 +717,8 @@ class Projector:
             dropped.extend(facts_dropped)
 
         # "below threshold": retrieved facts under the score threshold
-        # (track facts from memory retrieval that were below relevance threshold)
+        if hasattr(self.memory, "_last_retrieve_dropped_below_threshold"):
+            dropped.extend(self.memory._last_retrieve_dropped_below_threshold)
 
         # "ghost expired": ghost slides that left the tray this turn
         # (from tray eviction: trace["dropped_from_tray_over_budget"])
