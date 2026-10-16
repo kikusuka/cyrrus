@@ -691,16 +691,22 @@ class Projector:
                 pass
 
         # "system_message": the final rendered system message.
-        # "dropped": empty list for now (reserved for future use).
+        # "dropped": entries recorded below (over token budget, over fact cap,
+        # below threshold, ghost expired).  Collected during this turn.
         trace["routed"] = routed
         trace["ghosts"] = ghosts
         trace["facts"] = facts
         trace["system_message"] = system_content
-        # "dropped": entries recorded below (over token budget, over fact cap,
-        # below threshold, ghost expired).  Collected during this turn.
         dropped = []
+        seen_ids = set()
+
+        def add_drop(sid, reason):
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                dropped.append({"id": sid, "reason": reason})
 
         # "over token budget": slides that didn't fit in the knapsack budget
+        # (candidates + memory_slides not packed, plus tray evictions)
         # candidates may contain Slide objects or strings; handle both
         def get_id(s):
             return s.id if hasattr(s, "id") else s
@@ -709,22 +715,26 @@ class Projector:
         for s in candidates + memory_slides:
             sid = get_id(s)
             if sid not in packed_ids:
-                dropped.append({"id": sid, "reason": "over token budget"})
+                add_drop(sid, "over token budget")
+
+        # Tray eviction due to token budget pressure
+        for sid in trace.get("dropped_from_tray_over_budget", []):
+            add_drop(sid, "over token budget")
 
         # "over fact cap": facts cut by max_memory_facts or max_memory_tokens
         # (from earlier tracking: facts_dropped computed at lines 539-544)
         if "facts_dropped" in locals():
-            dropped.extend(facts_dropped)
+            for entry in facts_dropped:
+                add_drop(entry["key"], "over fact cap")
 
         # "below threshold": retrieved facts under the score threshold
         if hasattr(self.memory, "_last_retrieve_dropped_below_threshold"):
-            dropped.extend(self.memory._last_retrieve_dropped_below_threshold)
+            for entry in self.memory._last_retrieve_dropped_below_threshold:
+                add_drop(entry["key"], "below threshold")
 
-        # "ghost expired": ghost slides that left the tray this turn
-        # (from tray eviction: trace["dropped_from_tray_over_budget"])
-        if "dropped_from_tray_over_budget" in trace:
-            for s_id in trace["dropped_from_tray_over_budget"]:
-                dropped.append({"id": s_id, "reason": "ghost expired"})
+        # "ghost expired": ghost slides that aged out of the tray this turn
+        for sid in getattr(tray, "last_expired", []):
+            add_drop(sid, "ghost expired")
 
         trace["dropped"] = dropped
 

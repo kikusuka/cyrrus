@@ -32,6 +32,7 @@ class SlideTray:
         self.ghosts: List[Slide] = []
         self.turn_counters: Dict[str, int] = {}
         self.ghost_ages: Dict[str, int] = {}
+        self.last_expired: List[str] = []
         self.max_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
         self.max_ghost_turns = max_ghost_turns
@@ -41,6 +42,7 @@ class SlideTray:
         return slide.active_turns if slide.active_turns is not None else self.max_turns
 
     def update(self, new_slides: List[Slide]):
+        self.last_expired = []
         surviving = []
         newly_ghosted = set()
         for s in self.active:
@@ -73,6 +75,7 @@ class SlideTray:
                 surviving_ghosts.append(s)
             else:
                 self.ghost_ages.pop(s.id, None)
+                self.last_expired.append(s.id)
 
         self.ghosts = (
             surviving_ghosts[-self.max_ghost_slides:]

@@ -936,20 +936,44 @@ def test_below_threshold_drop():
 
 
 def test_ghost_expired_drop():
-    """Test that ghost slides evicted from the tray are tracked as "ghost expired".
+    """Test that a ghost slide aging out of the tray is tracked as "ghost expired".
 
-    Trigger: Route a slide on turn 1, then use a long input on turn 2 that
-    leaves no budget, causing the tray slide to be evicted.
+    Trigger: Route a slide on turn 1, then process turns with no triggers so
+    the slide ages from active → ghost → expired. Plenty of token budget so
+    no budget eviction interferes.
     """
     async def inner():
-        pipeline = fresh_pipeline(max_context_tokens=204, max_active_turns=1)
-        # Turn 1: route code_lens slide, gets packed into tray
+        pipeline = fresh_pipeline(max_context_tokens=1000, max_active_turns=1, max_ghost_turns=2)
+        # Turn 1: route code_lens slide into the tray
         await pipeline.process("write a python script", session_id="ghost_test")
-        # Turn 2: long input leaves no budget, slide evicted from tray
-        await pipeline.process("a very long sentence with many words taking up lots of tokens", session_id="ghost_test")
+        # Turns 2-5: no triggers, let the slide age from active → ghost → expired
+        for _ in range(4):
+            await pipeline.process("hello there", session_id="ghost_test")
         dropped = pipeline.last_trace.get("dropped", [])
         ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
-        assert len(ghost_expired) > 0, f"Expected ghost expired drops, got {dropped}"
+        assert len(ghost_expired) == 1, f"Expected exactly 1 ghost expired drop, got {dropped}"
+        assert ghost_expired[0]["id"] == "code_lens", f"Expected code_lens, got {ghost_expired}"
+
+    asyncio.run(inner())
+
+
+def test_eviction_over_token_budget_not_ghost_expired():
+    """Test that a slide evicted by token budget is "over token budget", not "ghost expired".
+
+    Trigger: Route a slide on turn 1, then use unrelated input on turn 2 with
+    no token budget, causing the tray slide to be evicted.
+    """
+    async def inner():
+        pipeline = fresh_pipeline(max_context_tokens=210, max_active_turns=5, max_ghost_turns=5)
+        # Turn 1: route code_lens slide, gets packed into tray
+        await pipeline.process("write a python script", session_id="eviction_test")
+        # Turn 2: unrelated input leaves no budget → slide evicted from tray
+        await pipeline.process("a very long sentence about weather patterns and climate change that goes on and on and on", session_id="eviction_test")
+        dropped = pipeline.last_trace.get("dropped", [])
+        over_budget = [d for d in dropped if d.get("reason") == "over token budget"]
+        ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
+        assert len(over_budget) > 0, f"Expected over token budget drops, got {dropped}"
+        assert len(ghost_expired) == 0, f"Expected no ghost expired drops, got {dropped}"
 
     asyncio.run(inner())
 
