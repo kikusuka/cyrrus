@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import sys
-from cyrrus.cyrrus import Projector
+from cyrrus import Projector, MemoryVault
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "slides.json")
 TEST_DB = "test_slides_memory.db"
@@ -399,7 +399,7 @@ async def test_max_active_turns_configurable():
     async def llm(m): return "ok"
     import tempfile, os
     tmp = tempfile.mktemp(suffix=".db")
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
     p = Projector(minimal_config, llm_call=llm, max_active_turns=1,
                   memory_db_path=tmp)
     await p.process("testword", session_id="u")
@@ -626,7 +626,7 @@ async def test_tokenizer_counts_characters():
     (100/7 avg word length). With a per-char tokenizer, it counts as 100 tokens,
     dramatically reducing the available slide budget and changing what fits.
     """
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -677,7 +677,7 @@ async def test_tokenizer_counts_characters():
 
 def test_tokenizer_object_with_encode():
     """Test tokenizer as an object with .encode() method."""
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
 
     class CharCountTokenizer:
         def encode(self, text: str) -> str:
@@ -701,7 +701,7 @@ def test_tokenizer_object_with_encode():
 
 def test_tokenizer_none_keeps_current_estimator():
     """Test that tokenizer=None uses the default word-split estimator."""
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -732,7 +732,7 @@ async def test_snapshot_system_message():
     routing, memory injection, ghost handling) will cause these asserts to
     fail — which is the point of a snapshot.
     """
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -800,7 +800,7 @@ async def test_custom_renderer_reaches_provider():
     "facts": [...], "base_system": str} and must return a string that
     is used as the system message content.
     """
-    from cyrrus.cyrrus import Projector
+    from cyrrus import Projector
 
     async def echo_llm(messages):  # noqa: ARG001
         return "ok"
@@ -845,7 +845,7 @@ def test_compact_renderer():
     Expected format: "facts: key=value; key=value" when there are fact slides,
     otherwise just the base_system lamp content.
     """
-    from cyrrus.cyrrus import compact
+    from cyrrus import compact
 
     # Empty facts -> just the lamp content
     data = {
@@ -952,6 +952,51 @@ def test_ghost_expired_drop():
         assert len(ghost_expired) > 0, f"Expected ghost expired drops, got {dropped}"
 
     asyncio.run(inner())
+
+
+def test_embeddings_are_opt_in():
+    """Embeddings are NOT loaded by default even if fastembed is installed.
+    
+    Retrieval defaults to keyword (BM25).  Callers must pass embedder= or
+    embedding_model= explicitly to opt into semantic retrieval.
+    """
+    import sys
+    import types
+
+    # Inject a fake fastembed into sys.modules to simulate it being installed.
+    fake_fastembed = types.ModuleType("fastembed")
+
+    class FakeTextEmbedding:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        def embed(self, texts):
+            return [[0.0] * 384 for _ in texts]
+
+    fake_fastembed.TextEmbedding = FakeTextEmbedding
+    sys.modules["fastembed"] = fake_fastembed
+
+    try:
+        # Default: no embedder passed -> _embedder must be None even though
+        # fastembed is "installed".
+        mv = MemoryVault(db_path=":memory:")
+        assert mv._embedder is None, (
+            f"Expected _embedder=None by default, got {mv._embedder!r}"
+        )
+
+        # Explicit embedding_model= should load the embedder.
+        mv2 = MemoryVault(db_path=":memory:", embedding_model="x")
+        assert mv2._embedder is not None, (
+            "Expected _embedder to be set when embedding_model is passed"
+        )
+        assert mv2._embedder.model_name == "x"
+
+        # Explicit embedder= should also work.
+        mv3 = MemoryVault(db_path=":memory:", embedder=fake_fastembed.TextEmbedding("y"))
+        assert mv3._embedder is not None
+        assert mv3._embedder.model_name == "y"
+    finally:
+        del sys.modules["fastembed"]
 
 
 if __name__ == "__main__":
