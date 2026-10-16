@@ -9,6 +9,7 @@ description = "Context routing for LLM calls. Decides what goes into the prompt 
 readme = "README.md"
 requires-python = ">=3.9"
 license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]
@@ -34,9 +35,6 @@ Issues = "https://github.com/kikusuka/cyrrus/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cyrrus*"]
-
-[tool.setuptools.package-data]
-cyrrus = ["py.typed"]
 
 # threshold_calibration.py is a dev/research tool, not user-facing.
 # It lives in the repo but doesn't ship in the pip package.
