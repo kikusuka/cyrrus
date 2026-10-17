@@ -16,7 +16,10 @@ That's it. No config required to start.
 
 ### Short scripts
 
-`process()` extracts facts in the background. In short scripts, call `await projector.flush()` (or use `async with Projector(...)`) before exiting, otherwise the last turn's facts can be lost.
+`process()` extracts facts in the background. In short scripts, either call
+`await projector.flush()` (or use `async with Projector(...)`) before exiting,
+or pass `wait_for_extraction=True` to `process()` so each turn's facts are
+stored before the call returns — the simple alternative to `flush()`.
 
 ---
 

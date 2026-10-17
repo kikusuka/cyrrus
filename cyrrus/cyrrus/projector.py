@@ -217,6 +217,7 @@ class Projector:
         fact_extractor: callable = None,
         extractor_mode: str = "replace",
         extractor_timeout: float = 10.0,
+        wait_for_extraction: bool = False,
         compress_tool_output: bool = False,
         compressor: object = None,
         trace_file: Optional[str] = None,
@@ -251,6 +252,7 @@ class Projector:
         self.fact_extractor = fact_extractor if fact_extractor is not None else extract_facts
         self.extractor_mode = extractor_mode
         self.extractor_timeout = extractor_timeout
+        self.wait_for_extraction = wait_for_extraction
         self.compress_tool_output = compress_tool_output
         self.compressor = compressor
         self.trace_file = trace_file
@@ -397,13 +399,21 @@ class Projector:
                 self._histories[session_id] = deque(maxlen=self.history_window * 2)
             return self._histories[session_id]
 
-    async def process(self, user_input: str, session_id: str = "default") -> str:
+    async def process(
+        self, user_input: str, session_id: str = "default",
+        wait_for_extraction: Optional[bool] = None,
+    ) -> str:
         """
         Run a message through the pipeline and return the model's response.
 
         session_id must be unique per user — it isolates memory and
         conversation history. In a Discord bot: session_id=str(message.author.id).
         In a web app: session_id=user_id or session token.
+
+        When wait_for_extraction is True, fact extraction for this turn is
+        awaited (bounded by extractor_timeout) before returning, so the turn's
+        facts are stored when the call returns. Defaults to the constructor
+        value (False = background extraction, fire-and-forget).
         """
         if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
             raise ValueError(
@@ -421,7 +431,12 @@ class Projector:
         trace = {"session_id": session_id, "user_input": user_input, "timestamp": start}
 
         try:
-            coro = self._process_inner(user_input, session_id, trace)
+            effective_wait = (
+                self.wait_for_extraction if wait_for_extraction is None else wait_for_extraction
+            )
+            coro = self._process_inner(
+                user_input, session_id, trace, wait_for_extraction=effective_wait
+            )
             if self.timeout:
                 coro = asyncio.wait_for(coro, timeout=self.timeout)
             response, trace = await coro
@@ -454,7 +469,8 @@ class Projector:
                 raise
 
     async def aprocess_stream(
-        self, user_input: str, session_id: str = "default"
+        self, user_input: str, session_id: str = "default",
+        wait_for_extraction: Optional[bool] = None,
     ) -> AsyncIterator[str]:
         """
         Same pipeline as process(), but yields response text as it arrives.
@@ -462,6 +478,10 @@ class Projector:
         session_id rules match process(). After the stream finishes normally,
         conversation history and fact extraction run. Cancel or error mid-stream
         skips those, but still records whatever arrived in the trace log.
+
+        When wait_for_extraction is True, fact extraction for this turn is
+        awaited (bounded by extractor_timeout) before the stream generator
+        completes. Defaults to the constructor value (False = today's behavior).
         """
         if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
             raise ValueError(
@@ -485,6 +505,9 @@ class Projector:
         history = None
         completed = False
         parts = []
+        effective_wait = (
+            self.wait_for_extraction if wait_for_extraction is None else wait_for_extraction
+        )
 
         try:
             messages, history = await self._prepare_turn(user_input, session_id, trace)
@@ -509,7 +532,8 @@ class Projector:
             trace["latency_s"] = round(time.time() - start, 4)
             await asyncio.shield(
                 self._after_stream(
-                    user_input, session_id, history, full, completed, trace
+                    user_input, session_id, history, full, completed, trace,
+                    wait_for_extraction=effective_wait,
                 )
             )
 
@@ -536,6 +560,7 @@ class Projector:
         full: str,
         completed: bool,
         trace: dict,
+        wait_for_extraction: bool = False,
     ):
         try:
             if completed and history is not None:
@@ -545,7 +570,12 @@ class Projector:
                     history.append({"role": "user", "content": user_input})
                     history.append({"role": "assistant", "content": full})
                 if self.fact_extractor:
-                    await self._shadow_extract(user_input, session_id)
+                    if wait_for_extraction:
+                        await self._shadow_extract(user_input, session_id)
+                    else:
+                        # Today's streaming behavior: await extraction so the
+                        # turn's facts are stored when the stream completes.
+                        await self._shadow_extract(user_input, session_id)
         except Exception as e:
             log.error("Stream post-processing failed: %s", e)
         self._record_trace(trace)
@@ -821,19 +851,26 @@ class Projector:
         self.last_stats = trace["stats"]
         return messages, history
 
-    async def _process_inner(self, user_input: str, session_id: str, trace: dict):
+    async def _process_inner(
+        self, user_input: str, session_id: str, trace: dict,
+        wait_for_extraction: bool = False,
+    ):
         messages, history = await self._prepare_turn(user_input, session_id, trace)
 
         # Await the LLM directly — don't use create_task here.
         # create_task detaches the coroutine from the parent, which means
         # asyncio.wait_for can cancel _process_inner but the LLM call keeps
         # running anyway. Awaiting directly lets the timeout actually work.
+        task = None
         if self.fact_extractor:
             task = asyncio.create_task(self._shadow_extract(user_input, session_id))
             self._pending_extractions.add(task)
             task.add_done_callback(self._pending_extractions.discard)
 
         response = await self.llm_call(messages)
+
+        if wait_for_extraction and task is not None:
+            await asyncio.wait_for(task, timeout=self.extractor_timeout)
 
         # Store this turn in history for the next call.
         # Protect history modification with session lock
