@@ -14,6 +14,10 @@ reply = bot.ask("hello")
 
 That's it. No config required to start.
 
+### Short scripts
+
+`process()` extracts facts in the background. In short scripts, call `await projector.flush()` (or use `async with Projector(...)`) before exiting, otherwise the last turn's facts can be lost.
+
 ---
 
 ## What it does

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0b4
+
+### Added
+- Pluggable `tokenizer` (object with `.encode` or a `str -> int` callable) used for all token budgeting.
+- Pluggable `renderer` for the system message, plus the built-in `cyrrus.renderers.compact`.
+- `projector.last_trace`: a decision trace showing routed slides, ghosts, injected facts, and dropped items with reasons ("over token budget", "over fact cap", "below threshold", "ghost expired").
+- Pluggable `fact_extractor` (sync or async; dict or list of pairs) with `extractor_mode="replace"|"merge"`, `extractor_timeout`, and fallback to the built-in extractor on failure.
+- Pluggable `history_summarizer` with `summarizer_timeout` and fallback to the built-in compaction.
+- `cyrrus.openai_compatible(base_url, model, api_key=None, timeout=120.0)`: provider for llama.cpp, vLLM, LM Studio, Ollama's /v1 and similar servers, with streaming.
+- LICENSE file now ships in the wheel and sdist; CI runs on Python 3.9 to 3.13.
+
+### Changed
+- Semantic (embedding) retrieval is now opt-in: pass `embedder=` or `embedding_model=`. Previously it loaded automatically when `fastembed` was installed, which could change retrieval results unexpectedly. The default is keyword (BM25) only.
+- Trace labels: slides evicted for lack of token budget are now reported as "over token budget"; "ghost expired" is used only when a ghost ages out.
+- License metadata is now the SPDX string `AGPL-3.0-only`.
+
+### Notes
+- `process()` extracts facts in the background. In short scripts, call `await projector.flush()` (or use `async with Projector(...)`) before exiting, otherwise the last turn's facts can be lost.
+
 ## 0.3.0b3
 
 ### Added
