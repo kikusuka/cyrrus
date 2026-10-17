@@ -177,3 +177,41 @@ def test_entities_to_facts_maps_labels_and_filters_garbage():
 async def test_direct_regex_helper_unchanged():
     facts = await _extract_facts_regex("I live in Hyderabad")
     assert facts.get("user_location") == "Hyderabad"
+
+
+# ─── conjunction stopping (rule tier, the tier that runs on this machine) ──
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Hi, my name is Alice and I live in Lisbon.", {"user_name": "Alice", "user_location": "Lisbon"}),
+        ("I work at Acme Robotics.", {"user_workplace": "Acme Robotics"}),
+        ("My name is Alice Wonderland.", {"user_name": "Alice Wonderland"}),
+        ("call me Sam", {"user_name": "Sam"}),
+        ("I'm Bob, and I work at Acme.", {"user_name": "Bob", "user_workplace": "Acme"}),
+        ("I live in Lisbon and work at Acme Robotics.", {"user_location": "Lisbon", "user_workplace": "Acme Robotics"}),
+        ("I moved to Paris last year.", {"user_location": "Paris"}),
+        ("I like raspberry ice cream and sour candy.", {"user_preference": "raspberry ice cream and sour candy"}),
+    ],
+)
+async def test_regex_stops_captured_values_at_conjunctions(text, expected):
+    configure_fact_extractor("regex")
+    assert get_fact_extractor_tier() == "regex"
+    facts = await extract_facts(text)
+    assert facts == expected
+
+
+def test_entities_to_facts_stops_values_at_conjunctions():
+    facts = _entities_to_facts([
+        {"text": "Alice and Bob", "label": "person name", "score": 0.9},
+        {"text": "Paris, France", "label": "location", "score": 0.9},
+        {"text": "Acme; also something", "label": "workplace", "score": 0.9},
+        {"text": "raspberry ice cream and sour candy", "label": "preference", "score": 0.9},
+    ])
+    assert facts == {
+        "user_name": "Alice",
+        "user_location": "Paris",
+        "user_workplace": "Acme",
+        "user_preference": "raspberry ice cream and sour candy",
+    }

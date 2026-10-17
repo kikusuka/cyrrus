@@ -45,6 +45,22 @@ _GARBAGE_VALUES = {
 _MIN_VALUE_LENGTH = 3
 _MAX_VALUE_LENGTH = 80
 
+_PROPER_FACT_KEYS = ("user_name", "user_location", "user_workplace")
+_VALUE_STOPS = (" and ", " but ", " or ", ";", ",", " i ", " i,")
+
+
+def _trim_value(value: str, key: str) -> str:
+    value = value.strip().rstrip(".,!?;").strip()
+    if key not in _PROPER_FACT_KEYS or not value:
+        return value
+    low = " " + value.lower() + " "
+    cut = len(value)
+    for stop in _VALUE_STOPS:
+        idx = low.find(stop)
+        if idx != -1:
+            cut = min(cut, max(idx - 1, 0))
+    return value[:cut].strip().rstrip(".,!?;").strip()
+
 # Semantic NER labels → fact keys used by MemoryVault / Projector.
 _GLINER_LABELS = [
     "person name",
@@ -111,31 +127,20 @@ def _is_garbage(value: str, *, key: str = "") -> bool:
 
 
 _PATTERNS = [
-    # Name — prefix matched case-insensitively, value must be properly capitalized
-    (r"(?i:(?:my name is|call me)\s+)([A-Z][a-z]{1,20}(?:\s+[A-Z][a-z]{1,20})?)", "user_name"),
-
-    # Job — specific job title words only
-    (r"i(?:'m| am) (?:a |an )?(\w+(?:\s+\w+)?\s+(?:developer|engineer|designer|student|researcher|founder|freelancer|architect|scientist|analyst|manager|writer|teacher|doctor|lawyer|nurse))", "user_job"),
-
-    # Workplace
-    (r"i work (?:at|for)\s+([^.,!?\n]{3,50})", "user_workplace"),
-
-    # Location
-    (r"i(?:'m| am) (?:from|in|based in)\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
-    (r"i live in\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
-    (r"i moved to\s+([A-Z][a-zA-Z\s]{2,30}?)(?:[.,!?]|$)", "user_location"),
-
-    # Project — stops at comma so "cyrrus, a library" extracts just "cyrrus"
-    (r"i(?:'m| am) (?:building|working on|making|developing|creating)\s+([^,\n]{3,60}?)(?:[.,!?]|$)", "user_project"),
-    (r"my (?:project|app|bot|library|tool|startup) is (?:called |named )?([^.,!?\n]{2,40})", "user_project"),
-
-    # Preferences
-    (r"i (?:prefer|always use|love using|like using)\s+([^.,!?\n]{3,50})", "user_preference"),
-    (r"my (?:favorite|preferred)\s+\w+\s+is\s+([^.,!?\n]{2,40})", "user_preference"),
-    (r"i (?:like|love)\s+([^.,!?\n]{3,50})", "user_preference"),
-
-    # Language
-    (r"i(?:'m| am) (?:learning|using|coding in|writing in)\s+(python|javascript|typescript|rust|go|java|kotlin|swift|c\+\+|ruby|php|elixir)", "user_language"),
+    (r"(?i:my name is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_name"),
+    (r"(?i:call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_name"),
+    (r"(?i:i(?:'m| am))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_name"),
+    (r"(?i:i(?:'m| am) (?:a |an )?(\w+(?:\s+\w+)?\s+(?:developer|engineer|designer|student|researcher|founder|freelancer|architect|scientist|analyst|manager|writer|teacher|doctor|lawyer|nurse)))", "user_job"),
+    (r"(?i:(?:i\s+)?work\s+(?:at|for))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_workplace"),
+    (r"(?i:i(?:'m| am) (?:from|in|based in))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_location"),
+    (r"(?i:i live in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_location"),
+    (r"(?i:i moved to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})", "user_location"),
+    (r"(?i:i(?:'m| am) (?:building|working on|making|developing|creating)\s+)([^,\n]{3,60}?)(?:[.,!?]|$)", "user_project"),
+    (r"(?i:my (?:project|app|bot|library|tool|startup) is (?:called |named )?)([^.,!?\n]{2,40})", "user_project"),
+    (r"(?i:i (?:prefer|always use|love using|like using)\s+)([^.,!?\n]{3,50})", "user_preference"),
+    (r"(?i:my (?:favorite|preferred)\s+\w+\s+is\s+)([^.,!?\n]{2,40})", "user_preference"),
+    (r"(?i:i (?:like|love)\s+)([^.,!?\n]{3,50})", "user_preference"),
+    (r"(?i:i(?:'m| am) (?:learning|using|coding in|writing in)\s+(python|javascript|typescript|rust|go|java|kotlin|swift|c\+\+|ruby|php|elixir))", "user_language"),
 ]
 
 
@@ -229,10 +234,9 @@ async def _extract_facts_regex(text: str) -> dict:
     for pattern, key in _PATTERNS:
         if key in facts:
             continue
-        m = re.search(pattern, text, re.IGNORECASE)
+        m = re.search(pattern, text)
         if m:
-            val = m.group(1).strip().rstrip(".,!?").strip()
-            # Regex path keeps the original length floor (no short-name exception).
+            val = _trim_value(m.group(1), key)
             if not _is_garbage(val):
                 facts[key] = val
     return facts
@@ -259,7 +263,7 @@ def _entities_to_facts(entities) -> dict:
         key = _LABEL_TO_KEY.get(str(label).strip().lower())
         if not key:
             continue
-        val = str(text).strip().rstrip(".,!?").strip()
+        val = _trim_value(str(text), key)
         if _is_garbage(val, key=key):
             continue
         ranked.append((score, key, val))
