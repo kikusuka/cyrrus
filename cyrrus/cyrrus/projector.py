@@ -12,6 +12,7 @@ from weakref import WeakValueDictionary
 
 from .router import IntentRouter
 from .memory import MemoryVault
+from .sqlite_backend import default_db_path
 from .tray import SlideTray
 from .knapsack import TokenKnapsack
 from .config_validation import validate_config
@@ -226,7 +227,7 @@ class Projector:
         max_ghost_slides: int = 5,
         max_ghost_turns: int = 2,
         timeout: Optional[float] = None,
-        memory_db_path: str = "slides_memory.db",
+        memory_db_path: Optional[str] = None,
         memory_max_facts_per_session: Optional[int] = None,
         memory_max_fact_value_length: int = 2000,
         max_memory_facts: int = 5,
@@ -292,6 +293,8 @@ class Projector:
         )
 
         self.router = router or IntentRouter(slides_config)
+        if memory_db_path is None:
+            memory_db_path = default_db_path()
         self.memory = memory or MemoryVault(
             db_path=memory_db_path,
             max_facts_per_session=memory_max_facts_per_session,

@@ -8,6 +8,7 @@ import sqlite3
 import time
 import logging
 import os
+import sys
 from typing import List, Dict, Any, Optional
 import asyncio
 import threading
@@ -15,6 +16,32 @@ from .backend import MemoryBackend, validate_session_id, validate_keyword
 
 
 log = logging.getLogger("cyrrus.sqlite_backend")
+
+
+def default_db_path() -> str:
+    """Resolve the default memory database path.
+
+    Order: CYRRUS_DB_PATH environment variable if set; else a per-user data
+    folder (Windows: %LOCALAPPDATA%\cyrrus\memory.db; macOS/Linux:
+    $XDG_DATA_HOME or ~/.local/share/cyrrus/memory.db). The containing folder
+    is created if missing.
+    """
+    env_path = os.environ.get("CYRRUS_DB_PATH")
+    if env_path:
+        result = env_path
+    elif sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "cyrrus")
+        os.makedirs(folder, exist_ok=True)
+        result = os.path.join(folder, "memory.db")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        folder = os.path.join(base, "cyrrus")
+        os.makedirs(folder, exist_ok=True)
+        result = os.path.join(folder, "memory.db")
+
+    log.info("Using default memory database at %s", os.path.abspath(result))
+    return result
 
 
 # Global registry of backend instances per DB path
@@ -60,7 +87,10 @@ class SQLiteBackend(MemoryBackend):
     or if the DB file is recreated (detected by file creation time change).
     """
     
-    def __init__(self, db_path: str = "slides_memory.db"):
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            db_path = default_db_path()
+            log.info("Using default memory database at %s", os.path.abspath(db_path))
         self.db_path = db_path
         self._initialized = False
         self._init_lock = None

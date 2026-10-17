@@ -5,7 +5,7 @@ import re
 from typing import Optional
 from .data import Slide
 from .backend import MemoryBackend, validate_session_id, validate_keyword
-from .sqlite_backend import SQLiteBackend
+from .sqlite_backend import SQLiteBackend, default_db_path
 from .bm25 import bm25_rank_facts
 
 log = logging.getLogger("cyrrus.memory")
@@ -28,7 +28,7 @@ class MemoryVault:
 
     def __init__(
         self,
-        db_path: str = "slides_memory.db",
+        db_path: Optional[str] = None,
         max_facts_per_session: Optional[int] = None,
         max_fact_value_length: int = 2000,
         embedder: object = None,
@@ -49,6 +49,8 @@ class MemoryVault:
             self._try_load_embedder(embedding_model)
 
         # Use provided backend or default to SQLite (singleton per DB path)
+        if db_path is None:
+            db_path = default_db_path()
         if backend is not None:
             self._backend = backend
         else:
