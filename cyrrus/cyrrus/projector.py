@@ -193,6 +193,8 @@ class Projector:
         history_verbatim_turns: int = 5,
         tool_executors: dict = None,
         fact_extractor: callable = None,
+        extractor_mode: str = "replace",
+        extractor_timeout: float = 10.0,
         compress_tool_output: bool = False,
         compressor: object = None,
         trace_file: Optional[str] = None,
@@ -223,7 +225,10 @@ class Projector:
 
         self.llm_call = llm_call
         self.tool_executors = tool_executors or {}
+        self._custom_fact_extractor = fact_extractor
         self.fact_extractor = fact_extractor if fact_extractor is not None else extract_facts
+        self.extractor_mode = extractor_mode
+        self.extractor_timeout = extractor_timeout
         self.compress_tool_output = compress_tool_output
         self.compressor = compressor
         self.trace_file = trace_file
@@ -798,16 +803,56 @@ class Projector:
                 log.warning("Compression failed for %s: %s", slide.id, e)
         return raw[:char_limit] if len(raw) > char_limit else raw
 
+    @staticmethod
+    def _normalize_facts(result) -> dict:
+        """Normalize a fact extractor result (dict or list of (key, value) tuples) to a dict."""
+        if isinstance(result, dict):
+            return dict(result)
+        normalized = {}
+        for item in result:
+            key, value = item
+            normalized[key] = value
+        return normalized
+
+    async def _upsert_facts(self, session_id: str, facts: dict):
+        for key, value in facts.items():
+            await self.memory.upsert(session_id, key, str(value), len(str(value).split()))
+
     async def _shadow_extract(self, user_input: str, session_id: str):
+        if not isinstance(user_input, str):
+            return
+
+        # No custom extractor provided: built-in only, exactly as today.
+        if self._custom_fact_extractor is None:
+            facts = self._normalize_facts(await self.fact_extractor(user_input))
+            await self._upsert_facts(session_id, facts)
+            return
+
+        async def run_custom():
+            if asyncio.iscoroutinefunction(self._custom_fact_extractor):
+                return await self._custom_fact_extractor(user_input)
+            return await asyncio.to_thread(self._custom_fact_extractor, user_input)
+
+        custom_facts = None
         try:
-            if not isinstance(user_input, str):
-                return
-            facts = await self.fact_extractor(user_input)
-            if isinstance(facts, dict):
-                for k, v in facts.items():
-                    await self.memory.upsert(session_id, k, str(v), len(str(v).split()))
+            custom_facts = self._normalize_facts(
+                await asyncio.wait_for(run_custom(), timeout=self.extractor_timeout)
+            )
         except Exception as e:
-            log.error("Fact extraction failed: %s", e)
+            log.warning("Custom fact extractor failed (%s); falling back to built-in.", e)
+
+        if self.extractor_mode == "merge":
+            builtin_facts = self._normalize_facts(await self.fact_extractor(user_input))
+            facts = dict(builtin_facts)
+            if custom_facts is not None:
+                facts.update(custom_facts)  # custom facts win on key conflicts
+        else:  # replace
+            if custom_facts is not None:
+                facts = custom_facts
+            else:
+                facts = self._normalize_facts(await self.fact_extractor(user_input))
+
+        await self._upsert_facts(session_id, facts)
 
     def ask(self, user_input: str, session_id: str = "__single_user__") -> str:
         """

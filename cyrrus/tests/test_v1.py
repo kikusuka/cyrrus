@@ -576,6 +576,107 @@ async def test_swappable_tray():
           any("fading" in m["content"] for m in trace["messages"] if m["role"] == "system"))
 
 
+async def _stored_facts(pipeline, session_id: str) -> dict:
+    import sqlite3
+    with sqlite3.connect(pipeline.memory._backend.db_path) as conn:
+        rows = conn.execute(
+            "SELECT keyword, value FROM facts WHERE session_id=?", (session_id,)
+        ).fetchall()
+    return dict(rows)
+
+
+async def test_fact_extractor_replace_mode():
+    async def custom(text):
+        return {"custom_fact": "from_custom"}
+    pipeline = fresh_pipeline(fact_extractor=custom, extractor_mode="replace")
+    await pipeline.process("my name is Alice", session_id="replace_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "replace_test")
+    check("replace mode uses only the custom extractor", "custom_fact" in facts)
+    check("replace mode does not store built-in user_name", "user_name" not in facts)
+
+
+async def test_fact_extractor_merge_mode():
+    async def custom(text):
+        return {"user_name": "CustomName", "extra_fact": "extra"}
+    pipeline = fresh_pipeline(fact_extractor=custom, extractor_mode="merge")
+    await pipeline.process("my name is Alice", session_id="merge_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "merge_test")
+    check("merge mode keeps built-in fact unless overridden", facts.get("user_name") == "CustomName")
+    check("merge mode stores custom fact", facts.get("extra_fact") == "extra")
+
+
+async def test_fact_extractor_async_callable():
+    async def custom(text):
+        return {"async_fact": "yes"}
+    pipeline = fresh_pipeline(fact_extractor=custom)
+    await pipeline.process("hello there", session_id="async_callable_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "async_callable_test")
+    check("async callable fact is stored", facts.get("async_fact") == "yes")
+
+
+async def test_fact_extractor_sync_callable():
+    def custom(text):
+        return {"sync_fact": "yes"}
+    pipeline = fresh_pipeline(fact_extractor=custom)
+    await pipeline.process("hello there", session_id="sync_callable_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "sync_callable_test")
+    check("sync callable fact is stored", facts.get("sync_fact") == "yes")
+
+
+async def test_fact_extractor_dict_return():
+    async def custom(text):
+        return {"dict_fact": "dict_value"}
+    pipeline = fresh_pipeline(fact_extractor=custom)
+    await pipeline.process("hello there", session_id="dict_return_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "dict_return_test")
+    check("dict return is stored", facts.get("dict_fact") == "dict_value")
+
+
+async def test_fact_extractor_list_of_tuples_return():
+    def custom(text):
+        return [("tuple_fact", "val1"), ("tuple_fact_two", "val2")]
+    pipeline = fresh_pipeline(fact_extractor=custom)
+    await pipeline.process("hello there", session_id="tuple_return_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "tuple_return_test")
+    check("list of tuples return is stored", facts.get("tuple_fact") == "val1")
+    check("second tuple fact is stored", facts.get("tuple_fact_two") == "val2")
+
+
+async def test_fact_extractor_raising_falls_back_to_builtin():
+    async def custom(text):
+        raise RuntimeError("extractor blew up")
+    pipeline = fresh_pipeline(fact_extractor=custom)
+    await pipeline.process("my name is Alice", session_id="raising_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "raising_test")
+    check("raising extractor falls back to built-in", facts.get("user_name") == "Alice")
+
+
+async def test_fact_extractor_timeout_falls_back_to_builtin():
+    async def slow(text):
+        await asyncio.sleep(60)
+        return {}
+    pipeline = fresh_pipeline(fact_extractor=slow, extractor_timeout=0.1)
+    await pipeline.process("my name is Alice", session_id="timeout_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "timeout_test")
+    check("timed-out extractor falls back to built-in", facts.get("user_name") == "Alice")
+
+
+async def test_fact_extractor_none_uses_builtin():
+    pipeline = fresh_pipeline(fact_extractor=None)
+    await pipeline.process("my name is Alice", session_id="none_test")
+    await asyncio.sleep(0.2)
+    facts = await _stored_facts(pipeline, "none_test")
+    check("fact_extractor=None uses built-in extractor", facts.get("user_name") == "Alice")
+
+
 async def main():
     if os.path.exists(TEST_DB):
         os.remove(TEST_DB)
