@@ -47,6 +47,8 @@ pip install cyrrus                  # core, zero dependencies
 pip install cyrrus[embeddings]      # + semantic routing and memory
 ```
 
+Python 3.9 to 3.13 are tested in CI.
+
 The import is always:
 ```python
 from cyrrus import Projector
@@ -253,6 +255,117 @@ print(trace["dropped_slide_ids"])       # what didn't fit the budget
 print(trace["messages"])                # exact messages sent to LLM
 print(trace["stats"]["history_turns"])  # how many turns of history
 ```
+
+---
+
+## Writing your own modules
+
+Every internal component of `Projector` is swappable via constructor arguments.
+
+### Custom tokenizer
+
+Used for token budgeting. Pass an object with `.encode(text)`, or any callable `str -> int`:
+
+```python
+class WordTokenizer:
+    def encode(self, text: str):
+        return text.split()
+
+bot = Projector(config, llm_call=my_llm, tokenizer=WordTokenizer())
+
+# or a plain callable
+def count(text: str) -> int:
+    return max(1, len(text.split()))
+
+bot = Projector(config, llm_call=my_llm, tokenizer=count)
+```
+
+### Custom renderer
+
+The renderer receives `{"slides", "ghosts", "facts", "base_system"}` and returns the system message string:
+
+```python
+from cyrrus.renderers import compact
+
+# built-in compact renderer
+bot = Projector(config, llm_call=my_llm, renderer=compact)
+
+# custom renderer
+def my_renderer(data: dict) -> str:
+    facts = "; ".join(s.content for s in data["facts"])
+    return f"{data['base_system']} | {facts}"
+
+bot = Projector(config, llm_call=my_llm, renderer=my_renderer)
+```
+
+### Custom fact extractor
+
+Sync or async; returns `{key: value}` or a list of `(key, value)` tuples. `extractor_mode="replace"` (default) hides the built-in facts; `"merge"` lets custom facts win on key conflicts:
+
+```python
+def my_extractor(text: str) -> dict:
+    return {"user_name": "Ada"} if "my name is" in text else {}
+
+bot = Projector(config, llm_call=my_llm, fact_extractor=my_extractor)
+
+async def my_extractor(text: str) -> dict:
+    return {"user_city": "Lisbon"}
+
+bot = Projector(config, llm_call=my_llm, fact_extractor=my_extractor, extractor_mode="merge")
+```
+
+### Custom history summarizer
+
+Sync or async; receives older history messages and returns a summary string that replaces them in the prompt:
+
+```python
+def summarize(old_messages: list) -> str:
+    return "Earlier turns covered gardening."
+
+bot = Projector(
+    config,
+    llm_call=my_llm,
+    history_summarizer=summarize,
+    history_verbatim_turns=2,
+)
+
+# async summarizers work the same way
+async def summarize(old_messages: list) -> str:
+    return "summary"
+```
+
+### LLM provider via openai_compatible
+
+Point at a local server (vLLM, Ollama, anything OpenAI-compatible) using stdlib only:
+
+```python
+from cyrrus.providers import openai_compatible
+
+llm = openai_compatible(base_url="http://localhost:8000/v1", model="local-model")
+reply = await llm([{"role": "user", "content": "hi"}])
+bot = Projector(config, llm_call=llm)
+```
+
+### Custom memory backend
+
+Subclass `MemoryBackend` and pass it to `MemoryVault`:
+
+```python
+from cyrrus import MemoryBackend, MemoryVault
+
+class MyBackend(MemoryBackend):
+    async def init_db(self): ...
+    async def upsert(self, session_id, keyword, value, tokens, max_facts_per_session, max_fact_value_length): ...
+    async def retrieve_current(self, session_id, limit=100): ...
+    async def touch(self, session_id, keywords): ...
+    async def delete_session(self, session_id): ...
+    async def get_fact_history(self, session_id, keyword): ...
+    async def close(self): ...
+
+bot = Projector(config, llm_call=my_llm, memory=MemoryVault(backend=MyBackend()))
+```
+
+Full runnable examples: `cyrrus/examples/custom_modules.py`.
 
 ---
 
