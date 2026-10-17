@@ -161,6 +161,21 @@ def _build_compact_history(history: deque, verbatim_turns: int) -> list:
     return compact_history
 
 
+async def _run_history_summarizer(summarizer: callable, old_messages: list, timeout: float) -> str:
+    """
+    Run a sync or async history summarizer with a timeout.
+
+    Returns the summary string. Raises (asyncio.TimeoutError or the
+    callable's own exception) if it fails or exceeds *timeout* — the
+    caller is responsible for falling back to built-in compression.
+    """
+    if asyncio.iscoroutinefunction(summarizer):
+        coro = summarizer(old_messages)
+    else:
+        coro = asyncio.to_thread(summarizer, old_messages)
+    return await asyncio.wait_for(coro, timeout=timeout)
+
+
 class Projector:
     """
     The main entry point. Wraps your LLM call and handles everything
@@ -191,6 +206,8 @@ class Projector:
         max_context_tokens: int = 800,
         history_window: int = 10,
         history_verbatim_turns: int = 5,
+        history_summarizer: callable = None,
+        summarizer_timeout: float = 10.0,
         tool_executors: dict = None,
         fact_extractor: callable = None,
         extractor_mode: str = "replace",
@@ -235,6 +252,8 @@ class Projector:
         self.max_context_tokens = max_context_tokens
         self.history_window = history_window
         self.history_verbatim_turns = history_verbatim_turns
+        self.history_summarizer = history_summarizer
+        self.summarizer_timeout = summarizer_timeout
         self.max_active_turns = max_active_turns
         self.max_ghost_slides = max_ghost_slides
         self.max_ghost_turns = max_ghost_turns
@@ -747,7 +766,35 @@ class Projector:
         # System message is rebuilt fresh each turn with current context.
         # History carries the actual conversation so follow-ups work.
         # Use compact history to maintain token consistency over long conversations.
-        compact_history = _build_compact_history(history, self.history_verbatim_turns)
+        # When history exceeds the verbatim budget and a custom summarizer is
+        # configured, older turns are replaced by a single summary message
+        # built from the summarizer's return value (same system-message
+        # format as the built-in compression). None or a failing/timing-out
+        # summarizer falls back to today's behavior and never crashes the turn.
+        verbatim_cutoff = self.history_verbatim_turns * 2
+        history_list = list(history)
+        if (
+            self.history_summarizer is not None
+            and len(history_list) > verbatim_cutoff
+        ):
+            old_messages = history_list[:-verbatim_cutoff]
+            verbatim_messages = history_list[-verbatim_cutoff:]
+            summary = None
+            try:
+                summary = await _run_history_summarizer(
+                    self.history_summarizer, old_messages, self.summarizer_timeout
+                )
+            except Exception as e:
+                log.warning(
+                    "History summarizer failed (%s); falling back to built-in compression.",
+                    e,
+                )
+            if summary:
+                compact_history = [{"role": "system", "content": summary}] + verbatim_messages
+            else:
+                compact_history = _build_compact_history(history, self.history_verbatim_turns)
+        else:
+            compact_history = _build_compact_history(history, self.history_verbatim_turns)
         
         user_content = user_input
         if tool_results:
