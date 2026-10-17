@@ -992,6 +992,7 @@ def test_over_token_budget_drop():
         dropped = pipeline.last_trace.get("dropped", [])
         over_budget = [d for d in dropped if d.get("reason") == "over token budget"]
         assert len(over_budget) > 0, f"Expected over token budget drops, got {dropped}"
+        await pipeline.flush()
 
     asyncio.run(inner())
 
@@ -1010,6 +1011,7 @@ def test_over_fact_cap_drop():
         dropped = pipeline.last_trace.get("dropped", [])
         over_cap = [d for d in dropped if d.get("reason") == "over fact cap"]
         assert len(over_cap) > 0, f"Expected over fact cap drops, got {dropped}"
+        await pipeline.flush()
 
     asyncio.run(inner())
 
@@ -1030,6 +1032,7 @@ def test_below_threshold_drop():
         dropped = pipeline.last_trace.get("dropped", [])
         below_thresh = [d for d in dropped if d.get("reason") == "below threshold"]
         assert len(below_thresh) > 0, f"Expected below threshold drops, got {dropped}"
+        await pipeline.flush()
 
     asyncio.run(inner())
 
@@ -1052,6 +1055,7 @@ def test_ghost_expired_drop():
         ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
         assert len(ghost_expired) == 1, f"Expected exactly 1 ghost expired drop, got {dropped}"
         assert ghost_expired[0]["id"] == "code_lens", f"Expected code_lens, got {ghost_expired}"
+        await pipeline.flush()
 
     asyncio.run(inner())
 
@@ -1073,6 +1077,7 @@ def test_eviction_over_token_budget_not_ghost_expired():
         ghost_expired = [d for d in dropped if d.get("reason") == "ghost expired"]
         assert len(over_budget) > 0, f"Expected over token budget drops, got {dropped}"
         assert len(ghost_expired) == 0, f"Expected no ghost expired drops, got {dropped}"
+        await pipeline.flush()
 
     asyncio.run(inner())
 
