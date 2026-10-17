@@ -243,6 +243,120 @@ def ollama(
     return _call_fallback
 
 
+def openai_compatible(
+    base_url: str,
+    model: str,
+    api_key: Optional[str] = None,
+    timeout: float = 120.0,
+) -> callable:
+    """
+    OpenAI-compatible chat completions over stdlib urllib (Together, Fireworks,
+    local vLLM, etc.). No extra dependencies.
+
+    Two paths:
+      * Normal call: POST {base_url}/chat/completions with stream:false,
+        returns choices[0].message.content.
+      * Streaming: same endpoint with stream:true; parses server-sent events
+        ("data: {...}" lines, ending with "data: [DONE]") and yields
+        StreamChunk values for each non-empty choices[0].delta.content.
+
+    The returned callable exposes `.astream(messages)` for
+    Projector.aprocess_stream(), same shape as ollama().
+
+    Args:
+        base_url: Server root, e.g. "http://localhost:8000". If it already
+                  ends with "/chat/completions" it is used as-is. Trailing
+                  slashes are stripped.
+        model: Model name sent in the request body.
+        api_key: When given, an "Authorization: Bearer <api_key>" header is
+                 sent; otherwise no Authorization header is added.
+        timeout: Per-request timeout in seconds. None disables it.
+    """
+    endpoint = base_url.rstrip("/")
+    if not endpoint.endswith("/chat/completions"):
+        endpoint = endpoint + "/chat/completions"
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    def _openai_http_blocking(
+        messages: list, *, stream: bool,
+    ) -> Any:
+        """Blocking HTTP POST to OpenAI-compatible /chat/completions. Runs in a thread pool."""
+        payload = {"model": model, "messages": messages, "stream": stream}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        sock_timeout = socket._GLOBAL_DEFAULT_TIMEOUT if timeout is None else timeout
+        try:
+            with urllib.request.urlopen(req, timeout=sock_timeout) as resp:
+                body = resp.read()
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read()
+            except Exception:
+                body = b""
+            raise RuntimeError(
+                f"OpenAI-compatible API HTTP {e.code}: "
+                f"{body.decode('utf-8', errors='replace')}"
+            ) from e
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(
+                f"OpenAI-compatible API request failed: {e}"
+            ) from e
+
+        text = body.decode("utf-8", errors="replace")
+        if stream:
+            chunks = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line.startswith("data: "):
+                    continue
+                payload_str = line[len("data: "):]
+                if payload_str.strip() == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload_str)
+                except json.JSONDecodeError as je:
+                    raise RuntimeError(
+                        f"OpenAI-compatible API returned malformed SSE JSON (HTTP {status}): {payload_str!r}"
+                    ) from je
+                chunk = normalize_openai_chunk(obj)
+                if chunk.text:
+                    chunks.append(chunk)
+            return chunks
+
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError as je:
+            raise RuntimeError(
+                f"OpenAI-compatible API returned malformed JSON (HTTP {status}): {text!r}"
+            ) from je
+        try:
+            return obj["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"OpenAI-compatible API returned unexpected response (HTTP {status}): {obj!r}"
+            ) from exc
+
+    async def _call(messages: list) -> str:
+        return await asyncio.to_thread(_openai_http_blocking, messages, stream=False)
+
+    async def _astream(messages: list):
+        chunks = await asyncio.to_thread(_openai_http_blocking, messages, stream=True)
+        for chunk in chunks:
+            yield chunk
+
+    _call.astream = _astream
+    return _call
+
+
 def openai(model: str = "gpt-4o-mini", api_key: str = None, base_url: str = None) -> callable:
     """
     OpenAI or any OpenAI-compatible API (Together, Fireworks, etc.).

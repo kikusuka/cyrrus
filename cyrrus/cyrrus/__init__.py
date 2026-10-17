@@ -9,7 +9,7 @@ from .extractor import (
     extract_facts,
     get_fact_extractor_tier,
 )
-from .providers import StreamChunk
+from .providers import StreamChunk, openai_compatible
 from . import providers
 from .backend import MemoryBackend
 from .sqlite_backend import SQLiteBackend, get_backend, close_backend
@@ -33,6 +33,7 @@ __all__ = [
     "configure_fact_extractor",
     "get_fact_extractor_tier",
     "StreamChunk",
+    "openai_compatible",
     "providers",
     "MemoryBackend",
     "SQLiteBackend",
