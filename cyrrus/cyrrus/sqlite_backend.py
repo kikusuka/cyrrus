@@ -63,10 +63,15 @@ class SQLiteBackend(MemoryBackend):
     def __init__(self, db_path: str = "slides_memory.db"):
         self.db_path = db_path
         self._initialized = False
-        self._init_lock = asyncio.Lock()
+        self._init_lock = None
         self._thread_lock = threading.Lock()
         self._conn = None
         self._file_creation_time = None
+    
+    def _get_init_lock(self) -> asyncio.Lock:
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        return self._init_lock
     
     def _get_file_creation_time(self):
         """Get the creation time of the DB file, or None if it doesn't exist."""
@@ -128,7 +133,7 @@ class SQLiteBackend(MemoryBackend):
         if self._initialized:
             return
         
-        async with self._init_lock:
+        async with self._get_init_lock():
             if self._initialized:
                 return
             

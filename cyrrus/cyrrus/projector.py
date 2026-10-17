@@ -30,14 +30,19 @@ class SessionLocks:
     
     def __init__(self):
         self._locks = WeakValueDictionary()
-        self._meta = asyncio.Lock()
+        self._meta = None
+    
+    def _get_meta_lock(self) -> asyncio.Lock:
+        if self._meta is None:
+            self._meta = asyncio.Lock()
+        return self._meta
     
     async def get(self, key: str) -> asyncio.Lock:
         """
         Get or create a lock for the given session key.
         The meta-lock ensures only one lock is created per key even under concurrent access.
         """
-        async with self._meta:
+        async with self._get_meta_lock():
             lock = self._locks.get(key)
             if lock is None:
                 lock = asyncio.Lock()

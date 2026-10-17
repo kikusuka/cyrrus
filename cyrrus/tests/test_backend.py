@@ -8,6 +8,7 @@ from typing import List, Dict, Any
 from cyrrus.backend import MemoryBackend
 from cyrrus.sqlite_backend import SQLiteBackend
 from cyrrus.memory import MemoryVault
+from cyrrus import Projector
 
 
 class MockBackend(MemoryBackend):
@@ -304,3 +305,36 @@ class TestBackwardCompatibility:
         await memory.upsert("session1", "test", "value", 1)
         results = await memory.retrieve("session1", "test")
         assert len(results) == 1
+
+
+def test_projector_builds_outside_event_loop():
+    """Projector must be constructible outside a running event loop.
+
+    On Python 3.9, asyncio.Lock() calls get_event_loop() at construction,
+    so creating a Projector outside a running event loop raises
+    RuntimeError: There is no current event loop.  The fix makes the
+    asyncio primitives (SessionLocks._meta and SQLiteBackend._init_lock)
+    lazy: they are created on first use inside an async method, never in
+    __init__.
+
+    NOTE: This machine runs Python 3.14, where asyncio.Lock() does not
+    require a running event loop at construction, so this test cannot
+    fail on old code locally.  It will be verified by CI on Python 3.9.
+    """
+    # Run and close an event loop so there is no current one afterward.
+    asyncio.run(asyncio.sleep(0))
+    asyncio.set_event_loop(None)
+
+    async def echo_llm(messages):
+        return "ok"
+
+    config = {
+        "core_lamp": {"content": "You are helpful."},
+    }
+    # Building a Projector (which creates SessionLocks and SQLiteBackend)
+    # must not raise outside an event loop.
+    p = Projector(config, llm_call=echo_llm, memory_db_path=":memory:")
+
+    # One process() turn inside a fresh event loop must work.
+    result = asyncio.run(p.process("hello", session_id="sync_test"))
+    assert isinstance(result, str) and len(result) > 0
