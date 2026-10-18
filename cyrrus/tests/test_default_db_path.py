@@ -13,6 +13,7 @@ def test_default_db_path_env_override(tmp_path, monkeypatch):
     assert default_db_path() == custom
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows uses LOCALAPPDATA")
 def test_default_db_path_creates_user_folder(tmp_path, monkeypatch):
     monkeypatch.delenv("CYRRUS_DB_PATH", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -61,6 +62,7 @@ def test_default_uses_env_path(tmp_path, monkeypatch):
     assert memory._backend.db_path == str(tmp_path / "env.db")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows uses LOCALAPPDATA")
 def test_default_logs_resolved_path(caplog, tmp_path, monkeypatch):
     monkeypatch.delenv("CYRRUS_DB_PATH", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
