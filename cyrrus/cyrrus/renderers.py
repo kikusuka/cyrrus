@@ -3,40 +3,33 @@ def compact(data: dict) -> str:
 
     Expected *data* dict (produced by Projector._render_system):
         {
-            "slides": [...],         # non‑memory slides
+            "slides": [...],         # non-memory slides
             "ghosts": [...],         # ghost slides
             "facts": [...],          # memory fact slides
             "base_system": str,      # lamp / system prompt content
         }
 
-    The returned string is a compact representation, e.g.
-    ``"facts: name=Alice; city=Lisbon"``.
+    Output: the base_system text first, always unchanged; then a blank line;
+    then ``"Known facts about the user: key=value; key=value"``. With no
+    facts, output only base_system.
+
+    Fact keys are read from the slide id (strip the ``mem_`` prefix) and
+    values from the slide content (strip the ``Fact: `` prefix).
     """
-    lamp = data["base_system"]
-    facts = data["facts"]
-    # Collect "key=value" pairs from fact slide contents.
+    base_system = data.get("base_system", "") or ""
+    facts = data.get("facts", []) or []
     pairs = []
     for slide in facts:
-        # Strip any "About the user: " prefix that the default renderer
-        # would have added; if the caller already stripped it, this is a no‑op.
-        content = slide.content
-        if content.startswith("About the user: "):
-            content = content[len("About the user: "):]
-        # Take the first "Fact: " prefix removal if present
+        key = getattr(slide, "id", "") or ""
+        if key.startswith("mem_"):
+            key = key[len("mem_"):]
+        content = getattr(slide, "content", "") or ""
         if content.startswith("Fact: "):
             content = content[len("Fact: "):]
-        if content:
-            pairs.append(f"{content.strip()}=")
-
-    # Deduplicate by key, keep last value
-    seen = {}
-    for pair in pairs:
-        if "=" in pair:
-            key, val = pair.split("=", 1)
-            seen[key.strip()] = val.strip()
-
-    # Build "key=value; key=value" string
-    parts = [f"{k}={v}" for k, v in seen.items()]
-    if parts:
-        return "facts: " + "; ".join(parts)
-    return lamp
+        key = key.strip()
+        content = content.strip()
+        if key and content:
+            pairs.append(f"{key}={content}")
+    if pairs:
+        return f"{base_system}\n\nKnown facts about the user: " + "; ".join(pairs)
+    return base_system

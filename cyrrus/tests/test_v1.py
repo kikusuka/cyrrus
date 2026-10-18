@@ -941,12 +941,14 @@ async def test_custom_renderer_reaches_provider():
 def test_compact_renderer():
     """The built-in compact renderer produces a terse system message.
 
-    Expected format: "facts: key=value; key=value" when there are fact slides,
-    otherwise just the base_system lamp content.
+    Expected format: base_system first, then a blank line and
+    "Known facts about the user: key=value; key=value". With no facts,
+    output only base_system. Fact keys come from the slide id (strip
+    "mem_") and values from the slide content (strip "Fact: ").
     """
     from cyrrus import compact
 
-    # Empty facts -> just the lamp content
+    # Empty facts -> just the lamp content (unchanged)
     data = {
         "slides": [],
         "ghosts": [],
@@ -957,15 +959,16 @@ def test_compact_renderer():
         f"Expected 'You are helpful.', got {compact(data)!r}"
     )
 
-    # With fact slides - use dicts instead of Slide objects
-    # The compact function accesses .content on fact items
+    # With fact slides: keys from slide id ("mem_<key>"), values from
+    # content ("Fact: <value>"), base_system kept first.
     class FakeSlide:
-        def __init__(self, content):
+        def __init__(self, id, content):
+            self.id = id
             self.content = content
 
     fact_slides = [
-        FakeSlide("About the user: name=Alice"),
-        FakeSlide("About the user: city=Lisbon"),
+        FakeSlide("mem_name", "Fact: Alice"),
+        FakeSlide("mem_city", "Fact: Lisbon"),
     ]
     data2 = {
         "slides": [],
@@ -974,9 +977,51 @@ def test_compact_renderer():
         "base_system": "You are helpful.",
     }
     result = compact(data2)
-    assert "facts:" in result, f"Expected 'facts:' in result, got {result!r}"
-    assert "name=Alice" in result, f"Expected 'name=Alice' in result, got {result!r}"
-    assert "city=Lisbon" in result, f"Expected 'city=Lisbon' in result, got {result!r}"
+    assert result == (
+        "You are helpful.\n\nKnown facts about the user: name=Alice; city=Lisbon"
+    ), f"compact renderer output mismatch.\n  got:      {result!r}"
+
+
+async def test_compact_renderer_integration_real_facts():
+    """End-to-end: real MemoryVault facts flow through the compact renderer.
+
+    Stores name=Alice, location=Lisbon, employer=Acme Robotics, runs a
+    Projector with renderer=compact and a fake llm_call that records the
+    system message, then asserts the exact rendered string.
+    """
+    from cyrrus import Projector
+    from cyrrus.renderers import compact
+
+    recorded = {}
+
+    async def fake_llm(messages):
+        recorded["system"] = next(
+            (m["content"] for m in messages if m["role"] == "system"), None
+        )
+        return "ok"
+
+    config = {"core_lamp": {"content": "You are helpful."}}
+    bot = Projector(
+        config, llm_call=fake_llm, renderer=compact, memory_db_path=None
+    )
+    await bot.memory.upsert("s1", "name", "Alice", 1)
+    await bot.memory.upsert("s1", "location", "Lisbon", 1)
+    await bot.memory.upsert("s1", "employer", "Acme Robotics", 1)
+    await bot.process(
+        "name location employer alice lisbon acme", session_id="s1"
+    )
+    await bot.flush()
+
+    expected = (
+        "You are helpful.\n\n"
+        "Known facts about the user: employer=Acme Robotics; "
+        "location=Lisbon; name=Alice"
+    )
+    assert recorded["system"] == expected, (
+        "compact renderer output mismatch.\n"
+        f"  got:      {recorded['system']!r}\n"
+        f"  expected: {expected!r}"
+    )
 
 
 def test_over_token_budget_drop():
@@ -1138,6 +1183,7 @@ if __name__ == "__main__":
         await test_snapshot_system_message()
         await test_custom_renderer_reaches_provider()
         test_compact_renderer()
+        await test_compact_renderer_integration_real_facts()
         # New drop reason tests
         await test_over_token_budget_drop()
         await test_over_fact_cap_drop()
