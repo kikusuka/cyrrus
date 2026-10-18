@@ -15,6 +15,7 @@ from .memory import MemoryVault
 from .sqlite_backend import default_db_path
 from .tray import SlideTray
 from .knapsack import TokenKnapsack
+from .renderers import display_key
 from .config_validation import validate_config
 from .extractor import extract_facts
 from .data import Slide
@@ -349,7 +350,7 @@ class Projector:
             system_parts.append("")
             for slide in memory_slides_final:
                 raw = slide.content.removeprefix("Fact: ").strip()
-                system_parts.append(f"About the user: {raw}")
+                system_parts.append(f"About the user: {display_key(slide.id)}: {raw}")
 
         return "\n".join(system_parts)
 

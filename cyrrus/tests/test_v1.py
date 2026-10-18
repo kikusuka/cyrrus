@@ -982,46 +982,75 @@ def test_compact_renderer():
     ), f"compact renderer output mismatch.\n  got:      {result!r}"
 
 
-async def test_compact_renderer_integration_real_facts():
-    """End-to-end: real MemoryVault facts flow through the compact renderer.
+async def test_integration_fact_labels_default_and_compact(tmp_path):
+    """End-to-end fact labels: real default extractor, no hand-stored facts.
 
-    Stores name=Alice, location=Lisbon, employer=Acme Robotics, runs a
-    Projector with renderer=compact and a fake llm_call that records the
-    system message, then asserts the exact rendered string.
+    Turn 1: "Hi, my name is Alice and I live in Lisbon."  -> user_name=Alice, user_location=Lisbon
+    Turn 2: "I work at Acme Robotics."   (wait_for_extraction=True)  -> user_workplace=Acme Robotics
+    Turn 3: "Where do I live and where do I work?"        -> facts retrieved and rendered
+
+    Asserts the exact system message for the default renderer and for the
+    built-in compact renderer. Both use display_key() labels (strip "mem_",
+    strip leading "user_", "_" -> " ").
     """
     from cyrrus import Projector
+    from cyrrus.extractor import configure_fact_extractor, get_fact_extractor_tier
     from cyrrus.renderers import compact
 
-    recorded = {}
+    previous_tier = get_fact_extractor_tier()
+    configure_fact_extractor("regex")
+    try:
+        recorded = {}
 
-    async def fake_llm(messages):
-        recorded["system"] = next(
-            (m["content"] for m in messages if m["role"] == "system"), None
+        def make_bot(renderer, db_suffix):
+            async def fake_llm(messages):
+                recorded[db_suffix] = next(
+                    (m["content"] for m in messages if m["role"] == "system"), None
+                )
+                return "ok"
+
+            return Projector(
+                {"core_lamp": {"content": "You are helpful."}},
+                llm_call=fake_llm,
+                renderer=renderer,
+                memory_db_path=str(tmp_path / f"labels_{db_suffix}.db"),
+            )
+
+        turns = [
+            "Hi, my name is Alice and I live in Lisbon.",
+            "I work at Acme Robotics.",
+            "Where do I live and where do I work?",
+        ]
+
+        default_bot = make_bot(None, "default")
+        compact_bot = make_bot(compact, "compact")
+        for bot in (default_bot, compact_bot):
+            await bot.process(turns[0], session_id="s1", wait_for_extraction=True)
+            await bot.process(turns[1], session_id="s1", wait_for_extraction=True)
+            await bot.process(turns[2], session_id="s1")
+
+        expected_default = (
+            "You are helpful.\n\nAbout the user: location: Lisbon\n"
+            "About the user: name: Alice\n"
+            "About the user: workplace: Acme Robotics"
         )
-        return "ok"
+        assert recorded["default"] == expected_default, (
+            "default renderer output mismatch.\n"
+            f"  got:      {recorded['default']!r}\n"
+            f"  expected: {expected_default!r}"
+        )
 
-    config = {"core_lamp": {"content": "You are helpful."}}
-    bot = Projector(
-        config, llm_call=fake_llm, renderer=compact, memory_db_path=None
-    )
-    await bot.memory.upsert("s1", "name", "Alice", 1)
-    await bot.memory.upsert("s1", "location", "Lisbon", 1)
-    await bot.memory.upsert("s1", "employer", "Acme Robotics", 1)
-    await bot.process(
-        "name location employer alice lisbon acme", session_id="s1"
-    )
-    await bot.flush()
-
-    expected = (
-        "You are helpful.\n\n"
-        "Known facts about the user: employer=Acme Robotics; "
-        "location=Lisbon; name=Alice"
-    )
-    assert recorded["system"] == expected, (
-        "compact renderer output mismatch.\n"
-        f"  got:      {recorded['system']!r}\n"
-        f"  expected: {expected!r}"
-    )
+        expected_compact = (
+            "You are helpful.\n\n"
+            "Known facts about the user: location=Lisbon; name=Alice; workplace=Acme Robotics"
+        )
+        assert recorded["compact"] == expected_compact, (
+            "compact renderer output mismatch.\n"
+            f"  got:      {recorded['compact']!r}\n"
+            f"  expected: {expected_compact!r}"
+        )
+    finally:
+        configure_fact_extractor(None if previous_tier == "auto" else previous_tier)
 
 
 def test_over_token_budget_drop():
@@ -1183,7 +1212,11 @@ if __name__ == "__main__":
         await test_snapshot_system_message()
         await test_custom_renderer_reaches_provider()
         test_compact_renderer()
-        await test_compact_renderer_integration_real_facts()
+        import tempfile
+
+        await test_integration_fact_labels_default_and_compact(
+            tmp_path=tempfile.mkdtemp()
+        )
         # New drop reason tests
         await test_over_token_budget_drop()
         await test_over_fact_cap_drop()
