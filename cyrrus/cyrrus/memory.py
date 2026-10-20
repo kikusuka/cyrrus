@@ -249,3 +249,43 @@ class MemoryVault:
         validate_keyword(keyword)
         await self._ensure_initialized()
         return await self._backend.get_fact_history(session_id, keyword)
+
+    async def forget_fact(self, session_id: str, key: str) -> bool:
+        """
+        Physically delete ALL rows for (session_id, key), including
+        superseded versions.
+
+        Returns True if at least one row was deleted.
+        """
+        validate_session_id(session_id)
+        validate_keyword(key)
+        await self._ensure_initialized()
+        return await self._backend.forget_fact(session_id, key)
+
+    async def forget_session(self, session_id: str) -> int:
+        """
+        Delete all facts for a session.
+
+        Returns the number of facts deleted.
+        """
+        validate_session_id(session_id)
+        await self._ensure_initialized()
+        return await self._backend.forget_session(session_id)
+
+    async def export_facts(
+        self, session_id: str, include_superseded: bool = False
+    ) -> list[dict]:
+        """
+        Export facts for a session as JSON-serializable dicts.
+
+        Args:
+            session_id: The session identifier
+            include_superseded: If True, include superseded versions.
+
+        Returns:
+            List of dicts with keys: key, value, created, invalid_at.
+            Ordered by creation.
+        """
+        validate_session_id(session_id)
+        await self._ensure_initialized()
+        return await self._backend.export_facts(session_id, include_superseded)

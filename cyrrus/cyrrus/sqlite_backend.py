@@ -414,7 +414,71 @@ class SQLiteBackend(MemoryBackend):
         if self._conn:
             self._conn.close()
             self._conn = None
-    
+
+    async def forget_fact(self, session_id: str, key: str) -> bool:
+        """Physically delete ALL rows for (session_id, key), including superseded versions."""
+        validate_session_id(session_id)
+        validate_keyword(key)
+
+        def _forget(conn):
+            cursor = conn.execute(
+                "DELETE FROM facts WHERE session_id=? AND keyword=?",
+                (session_id, key),
+            )
+            rowcount = cursor.rowcount
+            conn.commit()
+            return rowcount > 0
+
+        return await self._execute_with_retry(_forget)
+
+    async def forget_session(self, session_id: str) -> int:
+        """Delete all facts for a session. Returns the number of facts deleted."""
+        validate_session_id(session_id)
+
+        def _forget(conn):
+            cursor = conn.execute(
+                "DELETE FROM facts WHERE session_id=?",
+                (session_id,),
+            )
+            rowcount = cursor.rowcount
+            conn.commit()
+            return rowcount
+
+        return await self._execute_with_retry(_forget)
+
+    async def export_facts(
+        self, session_id: str, include_superseded: bool = False
+    ) -> list[dict]:
+        """Export facts for a session as JSON-serializable dicts, ordered by creation."""
+        validate_session_id(session_id)
+
+        def _export(conn):
+            if include_superseded:
+                rows = conn.execute(
+                    "SELECT keyword, value, valid_at, invalid_at FROM facts "
+                    "WHERE session_id=? ORDER BY valid_at ASC, rowid ASC",
+                    (session_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT keyword, value, valid_at, invalid_at FROM facts "
+                    "WHERE session_id=? AND invalid_at IS NULL "
+                    "ORDER BY valid_at ASC, rowid ASC",
+                    (session_id,),
+                ).fetchall()
+
+            return [
+                {
+                    "key": row[0],
+                    "value": row[1],
+                    "created": row[2],
+                    "invalid_at": row[3],
+                }
+                for row in rows
+            ]
+
+        return await self._execute_with_retry(_export)
+
     def __del__(self):
         """Ensure connection is closed when backend is garbage collected."""
         if self._conn:

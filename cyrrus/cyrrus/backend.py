@@ -144,3 +144,52 @@ class MemoryBackend(ABC):
         Close any connections or cleanup resources.
         """
         pass
+
+    async def forget_fact(self, session_id: str, key: str) -> bool:
+        """
+        Physically delete ALL rows for (session_id, key), including
+        superseded versions.
+
+        Args:
+            session_id: The session identifier
+            key: The fact keyword
+
+        Returns:
+            True if at least one row was deleted, False otherwise.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement forget_fact()"
+        )
+
+    async def forget_session(self, session_id: str) -> int:
+        """
+        Delete all facts for a session.
+
+        Args:
+            session_id: The session identifier
+
+        Returns:
+            Number of facts deleted.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement forget_session()"
+        )
+
+    async def export_facts(
+        self, session_id: str, include_superseded: bool = False
+    ) -> list[dict]:
+        """
+        Export facts for a session as JSON-serializable dicts.
+
+        Args:
+            session_id: The session identifier
+            include_superseded: If True, include superseded (invalidated)
+                versions; otherwise only current facts.
+
+        Returns:
+            List of dicts with keys: key, value, created (valid_at),
+            invalid_at. Ordered by creation (valid_at).
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement export_facts()"
+        )

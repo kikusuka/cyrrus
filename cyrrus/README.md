@@ -183,6 +183,29 @@ memory = MemoryVault(embedder=my_model, embedding_min_score=0.5)
 
 Memory is per `session_id`. Facts never leak between users.
 
+## Your data: forget and export
+
+cyrrus lets you delete and export user data:
+
+```python
+# Delete one fact (all versions, including superseded)
+await bot.forget_fact("user_123", "user_name")
+
+# Delete all facts for a session; also clears in-memory tray and history
+count = await bot.forget_session("user_123")
+
+# Export all current facts as JSON-serializable dicts
+facts = await bot.export_facts("user_123")
+# [{'key': 'user_name', 'value': 'Alice', 'created': '...', 'invalid_at': None}, ...]
+
+# Include superseded versions
+facts = await bot.export_facts("user_123", include_superseded=True)
+```
+
+These work on `Projector` (delegating to `MemoryVault` and the backend) and on
+`MemoryVault` directly. Custom backends inherit `NotImplementedError` defaults
+unless they override the methods.
+
 ---
 
 ## Conversation history

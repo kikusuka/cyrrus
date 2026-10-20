@@ -980,6 +980,32 @@ class Projector:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()
 
+    async def forget_fact(self, session_id: str, key: str) -> bool:
+        """
+        Physically delete ALL rows for (session_id, key), including
+        superseded versions. Returns True if at least one row was deleted.
+        """
+        return await self.memory.forget_fact(session_id, key)
+
+    async def forget_session(self, session_id: str) -> int:
+        """
+        Delete all facts for a session and clear that session's in-memory
+        tray and history. Returns the number of facts deleted.
+        """
+        count = await self.memory.forget_session(session_id)
+        # Clear in-memory tray and history for this session
+        self.trays.pop(session_id, None)
+        self._histories.pop(session_id, None)
+        return count
+
+    async def export_facts(
+        self, session_id: str, include_superseded: bool = False
+    ) -> list[dict]:
+        """
+        Export facts for a session as JSON-serializable dicts.
+        """
+        return await self.memory.export_facts(session_id, include_superseded)
+
     def _record_trace(self, trace: dict):
         self.last_trace = trace
         self.trace_log.append(trace)
