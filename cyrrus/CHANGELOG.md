@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Python 3.9: asyncio locks (SessionLocks._meta, SQLiteBackend._init_lock) are
+  now created lazily inside async methods, so Projector can be built outside
+  a running event loop.
+- Extractor values stop at conjunctions: "my name is Alice and I live in Lisbon"
+  now stores the name as "Alice" instead of "Alice and".
+- Compact renderer no longer shows fact values as keys and keeps the base prompt.
+
+### Added
+- `wait_for_extraction` option on `Projector.process()` and `aprocess_stream()`.
+- `embedding_min_score` (default 0.68) and hybrid embedding retrieval:
+  keyword/alias matches first, then embedding-only matches above threshold,
+  de-duplicated by fact id and capped at the limit.
+- `forget_fact(session_id, key)`, `forget_session(session_id)` and
+  `export_facts(session_id, include_superseded=False)` on Projector,
+  MemoryVault, and SQLiteBackend; custom backends get NotImplementedError
+  defaults.
+- `process_sync()`, `flush_sync()` and `close_sync()`: a synchronous wrapper
+  running on a private background event loop thread.
+
+### Changed
+- Default database location is now a per-user folder (Windows: %LOCALAPPDATA%,
+  macOS/Linux: $XDG_DATA_HOME or ~/.local/share). Set `memory_db_path` or
+  `CYRRUS_DB_PATH` to keep the old location, e.g. `memory_db_path="slides_memory.db"`.
+- Default and compact renderers now show readable fact labels, so default
+  system-message text changed.
+
 ## 0.3.0b4
 
 ### Added
