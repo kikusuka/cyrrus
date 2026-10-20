@@ -10,6 +10,10 @@ import pytest
 
 from cyrrus.memory import MemoryVault
 
+numpy = pytest.importorskip("numpy", reason="numpy required for embedding tests")
+
+numpy = pytest.importorskip("numpy", reason="numpy required for embedding tests")
+
 
 def _unit_vector(cosine: float) -> list:
     """2D unit vector whose first component is `cosine`."""
