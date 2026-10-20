@@ -173,6 +173,14 @@ On the next message, relevant facts are retrieved and injected into the system p
 
 **Without:** keyword overlap matching. Fast, zero dependencies, catches most cases.
 
+When an embedder is active, retrieval is **hybrid**: keyword/alias matches (BM25) come first in ranking order, then embedding-only matches with cosine score >= `embedding_min_score` are added, de-duplicated by fact id and capped at the limit. Keyword matches never need an embedding score. Facts failing both are reported as "below threshold" in the trace.
+
+`embedding_min_score` defaults to 0.68, calibrated for BAAI/bge-small-en-v1.5 on a small measurement. Pass a lower value to admit more facts, or a higher one to be stricter:
+
+```python
+memory = MemoryVault(embedder=my_model, embedding_min_score=0.5)
+```
+
 Memory is per `session_id`. Facts never leak between users.
 
 ---

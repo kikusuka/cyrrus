@@ -19,11 +19,19 @@ class MemoryVault:
     Retrieval has two modes:
     - Keyword (default): BM25 word overlap scoring.
     - Semantic (opt-in): pass embedder= or embedding_model= to use fastembed.
+      When an embedder is active, retrieval is hybrid: keyword/alias matches
+      (BM25) are returned first in ranking order, then embedding-only matches
+      with cosine score >= embedding_min_score are added, de-duplicated by
+      fact id and capped at the limit.
 
     Pass an embedder to use semantic retrieval without loading a second model:
 
         bot = Projector(config, llm_call=my_llm,
                         memory=MemoryVault(embedder=my_router.model))
+
+    embedding_min_score defaults to 0.68, calibrated for
+    BAAI/bge-small-en-v1.5 on a small measurement. Lower it to admit more
+    facts; raise it to be stricter.
     """
 
     def __init__(
@@ -33,12 +41,14 @@ class MemoryVault:
         max_fact_value_length: int = 2000,
         embedder: object = None,
         embedding_model: Optional[str] = None,
+        embedding_min_score: float = 0.68,
         backend: Optional[MemoryBackend] = None,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
         self._embedder = embedder
         self._np = None
+        self._embedding_min_score = embedding_min_score
 
         # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
         # Only load an embedding model if the caller explicitly passes
@@ -126,49 +136,70 @@ class MemoryVault:
 
     async def _semantic_retrieve(self, rows: list, user_input: str, limit: int) -> list:
         try:
-            # Embed each fact as "key: value" so the model understands context.
-            # "user_project: cyrrus library" embeds much better than just "cyrrus library".
-            fact_texts = [
-                f"{kw.replace('_', ' ')}: {val}" if val else kw.replace("_", " ")
-                for kw, val, _ in rows
-            ]
+            # --- Pass 1: keyword/alias (BM25) matches first ---
+            keyword_ranked = bm25_rank_facts(rows, user_input, limit=limit, score_threshold=0.0)
+            keyword_kws = {kw for _, kw, _, _ in keyword_ranked}
 
-            query_emb = self._np.array(
-                list(self._embedder.embed([user_input]))[0]
-            )
-            fact_embs = self._np.array(list(self._embedder.embed(fact_texts)))
-
-            norms = (
-                self._np.linalg.norm(fact_embs, axis=1)
-                * self._np.linalg.norm(query_emb)
-            )
-            norms[norms == 0] = 1e-9
-            scores = fact_embs.dot(query_emb) / norms
-
-            # Track dropped facts (below threshold - score < 0.2)
-            self._last_retrieve_dropped_below_threshold = []
-            for idx, score in enumerate(scores):
-                if score < 0.2:
-                    kw, val, tok = rows[idx]
-                    self._last_retrieve_dropped_below_threshold.append({"key": kw, "reason": "below threshold"})
-
-            ranked = sorted(
-                enumerate(scores), key=lambda x: x[1], reverse=True
-            )[:limit]
-
-            slides = []
-            for idx, score in ranked:
-                if score < 0.2:  # don't inject completely unrelated facts
-                    continue
-                kw, val, tok = rows[idx]
-                slides.append(Slide(
+            keyword_slides = []
+            for _, kw, val, tok in keyword_ranked:
+                keyword_slides.append(Slide(
                     id=f"mem_{kw}",
                     type="memory",
                     content=f"Fact: {val}",
                     tokens=tok,
                     priority=800,
                 ))
-            return slides
+
+            # --- Pass 2: embedding-only matches for non-keyword facts ---
+            remaining_rows = [r for r in rows if r[0] not in keyword_kws]
+            embedding_slides = []
+            dropped = []
+
+            if remaining_rows:
+                fact_texts = [
+                    f"{kw.replace('_', ' ')}: {val}" if val else kw.replace("_", " ")
+                    for kw, val, _ in remaining_rows
+                ]
+
+                query_emb = self._np.array(
+                    list(self._embedder.embed([user_input]))[0]
+                )
+                fact_embs = self._np.array(list(self._embedder.embed(fact_texts)))
+
+                norms = (
+                    self._np.linalg.norm(fact_embs, axis=1)
+                    * self._np.linalg.norm(query_emb)
+                )
+                norms[norms == 0] = 1e-9
+                scores = fact_embs.dot(query_emb) / norms
+
+                for idx, score in enumerate(scores):
+                    kw, val, tok = remaining_rows[idx]
+                    if score >= self._embedding_min_score:
+                        embedding_slides.append(Slide(
+                            id=f"mem_{kw}",
+                            type="memory",
+                            content=f"Fact: {val}",
+                            tokens=tok,
+                            priority=800,
+                        ))
+                    else:
+                        dropped.append({"key": kw, "reason": "below threshold"})
+
+            # Combine: keyword matches first, then embedding matches.
+            # De-duplicate by fact id and cap at the limit.
+            all_slides = keyword_slides + embedding_slides
+            seen_ids = set()
+            final_slides = []
+            for s in all_slides:
+                if s.id not in seen_ids:
+                    seen_ids.add(s.id)
+                    final_slides.append(s)
+                if len(final_slides) >= limit:
+                    break
+
+            self._last_retrieve_dropped_below_threshold = dropped
+            return final_slides
 
         except Exception as e:
             log.warning("Semantic retrieval failed (%s) — falling back to keywords.", e)

@@ -233,6 +233,7 @@ class Projector:
         memory_max_fact_value_length: int = 2000,
         max_memory_facts: int = 5,
         max_memory_tokens: Optional[int] = None,
+        embedding_min_score: float = 0.68,
         router: object = None,
         memory: object = None,
         knapsack: object = None,
@@ -270,6 +271,7 @@ class Projector:
         self.tool_executor_timeout = tool_executor_timeout
         self.max_memory_facts = max_memory_facts
         self.max_memory_tokens = max_memory_tokens
+        self.embedding_min_score = embedding_min_score
         self.tray_factory = tray_factory
         self.tokenizer = tokenizer
         self.renderer = renderer
@@ -300,6 +302,7 @@ class Projector:
             db_path=memory_db_path,
             max_facts_per_session=memory_max_facts_per_session,
             max_fact_value_length=memory_max_fact_value_length,
+            embedding_min_score=embedding_min_score,
         )
         self.knapsack = knapsack or TokenKnapsack()
 
