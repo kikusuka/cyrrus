@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from collections import deque, OrderedDict
 from collections.abc import AsyncIterator
@@ -279,6 +280,8 @@ class Projector:
         self._histories = {}  # session_id -> deque of {role, content} dicts
         self._session_locks = SessionLocks()  # per-session locking for tray mutations
         self._pending_extractions = set()  # track background fact extraction tasks
+        self._sync_loop = None  # background event loop for sync wrappers
+        self._sync_thread = None  # thread running the background loop
 
         if self.compress_tool_output and self.compressor is None:
             from .compression import ExtractiveCompressor
@@ -976,6 +979,75 @@ class Projector:
 
     async def __aenter__(self):
         return self
+
+    def _ensure_sync_loop(self):
+        """Ensure a background event loop thread exists, creating it lazily.
+
+        The loop runs on a daemon thread and is reused for all sync calls.
+        All async primitives (locks, etc.) created inside coroutines running
+        on this loop are bound to it, avoiding cross-loop binding issues.
+        """
+        if self._sync_loop is None:
+            self._sync_loop = asyncio.new_event_loop()
+            self._sync_thread = threading.Thread(
+                target=self._run_sync_loop, daemon=True
+            )
+            self._sync_thread.start()
+        return self._sync_loop
+
+    def _run_sync_loop(self):
+        """Run the background event loop forever until stopped."""
+        asyncio.set_event_loop(self._sync_loop)
+        self._sync_loop.run_forever()
+
+    def process_sync(
+        self, user_input: str, session_id: str = "default", **kwargs
+    ) -> str:
+        """
+        Synchronous wrapper for process(). Runs the async pipeline on a
+        private background event loop thread (created lazily, reused).
+
+        Cannot be called from inside a running event loop — use
+        await process() there instead.
+
+        Repeated calls on the same Projector share memory and tray state.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "use await process() instead — process_sync() cannot be called "
+                "from inside a running event loop"
+            )
+
+        loop = self._ensure_sync_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self.process(user_input, session_id=session_id, **kwargs),
+            loop,
+        )
+        return future.result()
+
+    def flush_sync(self):
+        """Synchronous wrapper for flush(). Waits for pending extractions."""
+        loop = self._ensure_sync_loop()
+        future = asyncio.run_coroutine_threadsafe(self.flush(), loop)
+        return future.result()
+
+    def close_sync(self):
+        """Stop the background event loop thread and clean up."""
+        if self._sync_loop is None:
+            return
+        loop = self._sync_loop
+        # Flush pending extractions before stopping
+        future = asyncio.run_coroutine_threadsafe(self.aclose(), loop)
+        future.result()
+        # Stop the loop from this thread
+        loop.call_soon_threadsafe(loop.stop)
+        self._sync_thread.join()
+        self._sync_loop = None
+        self._sync_thread = None
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()

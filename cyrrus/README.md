@@ -14,12 +14,32 @@ reply = bot.ask("hello")
 
 That's it. No config required to start.
 
-### Short scripts
+## Using Cyrrus without async
 
-`process()` extracts facts in the background. In short scripts, either call
-`await projector.flush()` (or use `async with Projector(...)`) before exiting,
-or pass `wait_for_extraction=True` to `process()` so each turn's facts are
-stored before the call returns — the simple alternative to `flush()`.
+If your script isn't running inside an async event loop, use the synchronous
+wrapper. It runs on a private background event loop thread (created lazily,
+reused across calls), so repeated calls share memory:
+
+```python
+from cyrrus import Projector
+
+bot = Projector({"core_lamp": {"content": "You are helpful."}},
+                llm_call=my_llm)
+reply = bot.process_sync("hello", session_id="user_1")
+bot.flush_sync()          # ensure background fact extraction is done
+bot.close_sync()          # stop the background thread
+```
+
+Don't call `process_sync()` from inside FastAPI, Discord.py, or any async
+framework — use `await process()` there instead. Calling it from a running
+loop raises `RuntimeError`.
+
+For simple single-user scripts, `bot.ask("hello")` also works (it runs
+`asyncio.run()` under the hood).
+
+In short scripts using the async API, call `await projector.flush()` (or use
+`async with Projector(...)`) before exiting, or pass `wait_for_extraction=True`
+to `process()` so each turn's facts are stored before the call returns.
 
 ---
 
