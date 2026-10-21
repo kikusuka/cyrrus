@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e . pytest pytest-asyncio
+      - run: pip install -e . pytest pytest-asyncio numpy
         working-directory: cyrrus
       - run: python -m pytest tests -q -W ignore
         working-directory: cyrrus
