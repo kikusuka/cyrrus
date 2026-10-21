@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0b5
 
 ### Fixed
 - Python 3.9: asyncio locks (SessionLocks._meta, SQLiteBackend._init_lock) are

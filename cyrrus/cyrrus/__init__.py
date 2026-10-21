@@ -15,7 +15,7 @@ from .backend import MemoryBackend
 from .sqlite_backend import SQLiteBackend, get_backend, close_backend
 from .renderers import compact
 
-__version__ = "0.3.0b4"
+__version__ = "0.3.0b5"
 
 def estimate_tokens(text: str) -> int:
     """Rough token count. Useful for setting 'tokens' in config manually."""
