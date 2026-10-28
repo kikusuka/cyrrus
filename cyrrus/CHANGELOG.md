@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Services registry with data-driven service definitions (ollama, lmstudio, llama.cpp, openai, mistral, groq, openrouter, anthropic, custom)
+- Configuration system with project and user settings files (`cyrrus.config.json`)
+- Precedence: CLI flags > environment variables > project file > user file > defaults
+- `.env` file support with automatic `.gitignore` management
+- Tools layer with plain functions for models, connection, doctor, memory, sessions, routing
+- CLI commands: `doctor`, `connect`, `services`, `models`, `route`, `memory`, `sessions`, `config`
+- Global CLI flags: `--config`, `--db`, `--session`, `--json`, `--no-color`, `--version`
+- Secret redaction in configuration display
+- Service detection for local services with configurable timeout
+- Diagnostic checks via `cyrrus doctor`
+- Memory operations: list, search, forget, forget-all, export, import
+- Context routing dry run via `cyrrus route`
+
+### Changed
+- Extended CLI with new commands while preserving existing `init` functionality
+- Added `cyrrus/__main__.py` for module execution
+
 ## 0.3.0b5
 
 ### Fixed

@@ -144,6 +144,50 @@ async def my_llm(messages: list) -> str:
 
 ---
 
+## Command-line setup
+
+Cyrrus includes a CLI for configuration and diagnostics:
+
+```bash
+# Configure a service
+cyrrus connect --service ollama --model llama3.2 --test --save project
+
+# Run diagnostics
+cyrrus doctor
+
+# List available services (with local detection)
+cyrrus services
+
+# List models for a service
+cyrrus models --service ollama
+
+# Test context routing (dry run)
+cyrrus route "write a python function"
+
+# Memory operations
+cyrrus memory list
+cyrrus memory search "discord bot"
+cyrrus memory export --output backup.json
+```
+
+### Available services
+
+| Service | Kind | Default URL | API Key |
+|---------|------|-------------|---------|
+| ollama | local | http://localhost:11434 | None |
+| lmstudio | local | http://localhost:1234/v1 | None |
+| llama.cpp | local | http://localhost:8080/v1 | None |
+| openai | hosted | https://api.openai.com/v1 | OPENAI_API_KEY |
+| mistral | hosted | https://api.mistral.ai/v1 | MISTRAL_API_KEY |
+| groq | hosted | https://api.groq.com/openai/v1 | GROQ_API_KEY |
+| openrouter | hosted | https://openrouter.ai/api/v1 | OPENROUTER_API_KEY |
+| anthropic | hosted | https://api.anthropic.com | ANTHROPIC_API_KEY |
+| custom | local | http://localhost:8000/v1 | None |
+
+Configuration is stored in `cyrrus.config.json` (project) or per-user settings. API keys are never written to config files — use environment variables or a `.env` file.
+
+---
+
 ## What's actually happening under the hood
 
 ```
