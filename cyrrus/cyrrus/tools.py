@@ -47,6 +47,9 @@ def list_models(
     url = base_url or service.default_base_url
     if service.models_endpoint:
         endpoint = url.rstrip("/") + service.models_endpoint
+    elif service.provider_type in ("openai_compatible", "openai", "groq"):
+        # Hosted OpenAI-compatible APIs expose GET /models
+        endpoint = url.rstrip("/") + "/models"
     else:
         return {
             "success": False,
@@ -202,7 +205,10 @@ def check_connection(config: Dict[str, Any], timeout: float = 10.0) -> Dict[str,
     except Exception as e:
         # Redact error message to avoid leaking secrets
         error_msg = str(e)
-        error_msg = error_msg.replace(os.environ.get(provider.get("api_key_env", ""), ""), "*****")
+        api_key_env = provider.get("api_key_env") or ""
+        api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+        if api_key:
+            error_msg = error_msg.replace(api_key, "*****")
         return {
             "success": False,
             "reachable": True,

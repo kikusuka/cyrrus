@@ -20,6 +20,12 @@ class TestCLIDoctor:
         # Just check it doesn't crash
         assert result is None or result == 0
 
+    def test_cli_doctor_json_trailing_flag(self, monkeypatch):
+        """Test doctor accepts --json after the subcommand."""
+        monkeypatch.setattr("cyrrus.cli.load_config", lambda **kw: {"schema_version": 1, "provider": {}, "memory": {}, "context": {}, "ui": {}})
+        result = main(["doctor", "--json"])
+        assert result is None or result == 0
+
     def test_cli_doctor_text(self, monkeypatch):
         """Test doctor command with text output."""
         monkeypatch.setattr("cyrrus.cli.load_config", lambda **kw: {"schema_version": 1, "provider": {}, "memory": {}, "context": {}, "ui": {}})
@@ -36,6 +42,12 @@ class TestCLIServices:
         result = main(["--json", "services"])
         assert result is None or result == 0
 
+    def test_cli_services_json_trailing_flag(self, monkeypatch):
+        """Test services accepts --json after the subcommand."""
+        monkeypatch.setattr("cyrrus.cli.detect_services", lambda timeout: {})
+        result = main(["services", "--json"])
+        assert result is None or result == 0
+
     def test_cli_services_text(self, monkeypatch):
         """Test services command with text output."""
         monkeypatch.setattr("cyrrus.cli.detect_services", lambda timeout: {})
@@ -50,6 +62,12 @@ class TestCLIConfig:
         """Test config show command."""
         monkeypatch.setattr("cyrrus.cli.load_config", lambda **kw: {"schema_version": 1, "provider": {}, "memory": {}, "context": {}, "ui": {}})
         result = main(["config", "show"])
+        assert result is None or result == 0
+
+    def test_cli_config_show_json_trailing_flag(self, monkeypatch):
+        """Test config show accepts --json after the subcommand."""
+        monkeypatch.setattr("cyrrus.cli.load_config", lambda **kw: {"schema_version": 1, "provider": {}, "memory": {}, "context": {}, "ui": {}})
+        result = main(["config", "show", "--json"])
         assert result is None or result == 0
 
     def test_cli_config_path(self, monkeypatch):

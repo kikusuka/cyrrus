@@ -407,6 +407,10 @@ def cmd_config(args) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work.
+    json_parent = argparse.ArgumentParser(add_help=False)
+    json_parent.add_argument("--json", action="store_true", help="output JSON")
+
     parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls")
     parser.add_argument("--version", action="version", version="cyrrus 0.3.0b5")
     parser.add_argument("--config", help="path to project config file")
@@ -426,10 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--no-input", action="store_true", help="force non-interactive mode")
 
     # doctor command
-    doctor_cmd = commands.add_parser("doctor", help="run diagnostic checks")
+    doctor_cmd = commands.add_parser("doctor", parents=[json_parent], help="run diagnostic checks")
 
     # connect command
-    connect = commands.add_parser("connect", help="configure and test service connection")
+    connect = commands.add_parser("connect", parents=[json_parent], help="configure and test service connection")
     connect.add_argument("--service", required=True, help="service ID")
     connect.add_argument("--model", help="model name")
     connect.add_argument("--base-url", help="override base URL")
@@ -439,50 +443,50 @@ def build_parser() -> argparse.ArgumentParser:
     connect.add_argument("--save", choices=["project", "user"], help="save configuration")
 
     # services command
-    services_cmd = commands.add_parser("services", help="list available services")
+    services_cmd = commands.add_parser("services", parents=[json_parent], help="list available services")
 
     # models command
-    models = commands.add_parser("models", help="list models for a service")
+    models = commands.add_parser("models", parents=[json_parent], help="list models for a service")
     models.add_argument("--service", help="service ID (uses configured if not set)")
     models.add_argument("--base-url", help="override base URL")
     models.add_argument("--timeout", type=float, default=5.0, help="request timeout")
 
     # route command
-    route = commands.add_parser("route", help="dry run of context routing")
+    route = commands.add_parser("route", parents=[json_parent], help="dry run of context routing")
     route.add_argument("text", help="input text to route")
     route.add_argument("--slides", help="path to slides.json")
 
     # memory command
-    memory = commands.add_parser("memory", help="memory operations")
+    memory = commands.add_parser("memory", parents=[json_parent], help="memory operations")
     memory_sub = memory.add_subparsers(dest="action", required=True)
-    memory_list_cmd = memory_sub.add_parser("list", help="list facts")
+    memory_list_cmd = memory_sub.add_parser("list", parents=[json_parent], help="list facts")
     memory_list_cmd.add_argument("--limit", type=int, default=100, help="max facts to return")
-    memory_search_cmd = memory_sub.add_parser("search", help="search facts")
+    memory_search_cmd = memory_sub.add_parser("search", parents=[json_parent], help="search facts")
     memory_search_cmd.add_argument("query", help="search query")
     memory_search_cmd.add_argument("--limit", type=int, default=10, help="max results")
-    memory_forget_cmd = memory_sub.add_parser("forget", help="delete a fact")
+    memory_forget_cmd = memory_sub.add_parser("forget", parents=[json_parent], help="delete a fact")
     memory_forget_cmd.add_argument("fact_id", type=int, help="fact ID")
     memory_forget_cmd.add_argument("--yes", action="store_true", help="confirm deletion")
-    memory_forget_all_cmd = memory_sub.add_parser("forget-all", help="delete all facts")
+    memory_forget_all_cmd = memory_sub.add_parser("forget-all", parents=[json_parent], help="delete all facts")
     memory_forget_all_cmd.add_argument("--yes", action="store_true", help="confirm deletion")
-    memory_export_cmd = memory_sub.add_parser("export", help="export facts to JSON")
+    memory_export_cmd = memory_sub.add_parser("export", parents=[json_parent], help="export facts to JSON")
     memory_export_cmd.add_argument("--output", help="output file path")
-    memory_import_cmd = memory_sub.add_parser("import", help="import facts from JSON")
+    memory_import_cmd = memory_sub.add_parser("import", parents=[json_parent], help="import facts from JSON")
     memory_import_cmd.add_argument("input", help="input file path")
 
     # sessions command
-    sessions_cmd = commands.add_parser("sessions", help="list conversation sessions")
+    sessions_cmd = commands.add_parser("sessions", parents=[json_parent], help="list conversation sessions")
 
     # config command
-    config_cmd = commands.add_parser("config", help="configuration operations")
+    config_cmd = commands.add_parser("config", parents=[json_parent], help="configuration operations")
     config_sub = config_cmd.add_subparsers(dest="action", required=True)
-    config_sub.add_parser("show", help="show configuration (secrets redacted)")
-    config_get = config_sub.add_parser("get", help="get a config value")
+    config_sub.add_parser("show", parents=[json_parent], help="show configuration (secrets redacted)")
+    config_get = config_sub.add_parser("get", parents=[json_parent], help="get a config value")
     config_get.add_argument("key", help="dotted key path (e.g., provider.service)")
-    config_set = config_sub.add_parser("set", help="set a config value")
+    config_set = config_sub.add_parser("set", parents=[json_parent], help="set a config value")
     config_set.add_argument("key", help="dotted key path (e.g., provider.service)")
     config_set.add_argument("value", help="value to set")
-    config_sub.add_parser("path", help="show config file paths")
+    config_sub.add_parser("path", parents=[json_parent], help="show config file paths")
 
     return parser
 
