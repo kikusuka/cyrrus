@@ -1,9 +1,10 @@
+from __future__ import annotations
 """
 SQLite backend implementation for MemoryVault.
 
 This is the default zero-dependency backend, wrapping the existing
 SQLite logic that was previously hardcoded in MemoryVault.
-from __future__ import annotations
+"""
 import sqlite3
 import time
 import logging
