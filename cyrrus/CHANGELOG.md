@@ -8,8 +8,17 @@
 - Precedence: CLI flags > environment variables > project file > user file > defaults
 - `.env` file support with automatic `.gitignore` management
 - Tools layer with plain functions for models, connection, doctor, memory, sessions, routing
+- Real memory and sessions tools layer:
+  - `memory_list(session, include_superseded=False)` backed by `export_facts`
+  - `memory_search(session, query, limit)` via BM25 / hybrid retrieval returning key, value, and score
+  - `memory_forget(session, key)` via `forget_fact`
+  - `memory_forget_all(session)` via `forget_session`
+  - `memory_export(session, path)` writing JSON
+  - `memory_import(session, path)` validating all rows before upsert
+  - `sessions()` listing session IDs with active fact counts
+  - `MemoryBackend.list_sessions()` default method and `SQLiteBackend` implementation
 - CLI commands: `doctor`, `connect`, `services`, `models`, `route`, `memory`, `sessions`, `config`
-- Global CLI flags: `--config`, `--db`, `--session`, `--json`, `--no-color`, `--version`
+- Global CLI flags: `--config`, `--db`, `--session`, `--json`, `--no-color`, `--version`, `--yes`
 - Secret redaction in configuration display
 - Service detection for local services with configurable timeout
 - Diagnostic checks via `cyrrus doctor`
@@ -19,6 +28,7 @@
 ### Changed
 - Extended CLI with new commands while preserving existing `init` functionality
 - Added `cyrrus/__main__.py` for module execution
+- Replaced memory and session tool placeholders with real implementations
 
 ## 0.3.0b5
 

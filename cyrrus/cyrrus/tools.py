@@ -1,9 +1,6 @@
-"""
-Plain tool functions for Cyrrus.
-
-All functions return data (dicts, lists, etc.) without printing.
-Intended for use by CLI, menu interface, and MCP server.
-"""
+from __future__ import annotations
+import asyncio
+import concurrent.futures
 import json
 import os
 import socket
@@ -14,7 +11,15 @@ from pathlib import Path
 
 from .services import get_service, detect_services
 from .config import load_config, redact_secrets
-from .sqlite_backend import default_db_path
+from .sqlite_backend import default_db_path, get_backend
+from .memory import MemoryVault
+from .backend import (
+    validate_session_id,
+    validate_keyword,
+    MAX_KEYWORD_LENGTH,
+    MAX_FACT_VALUE_LENGTH,
+)
+from .bm25 import bm25_rank_facts
 
 
 def list_models(
@@ -433,175 +438,467 @@ def route_dry_run(text: str, slides_path: Optional[str] = None) -> Dict[str, Any
         }
 
 
-def memory_list(db_path: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+def _run_async(coro):
+    """Run an async coroutine synchronously, handling running event loops safely."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
+def _resolve_db_path(db_path: Optional[str] = None) -> str:
+    """Resolve database path from argument, config, or system default."""
+    if db_path:
+        return db_path
+    try:
+        cfg = load_config()
+        configured = cfg.get("memory", {}).get("db_path")
+        if configured:
+            return configured
+    except Exception:
+        pass
+    return default_db_path()
+
+
+def _get_memory_vault(db_path: Optional[str] = None) -> MemoryVault:
+    """Create a MemoryVault with configured retrieval settings."""
+    resolved = _resolve_db_path(db_path)
+    embedding_model = None
+    embed_min_score = 0.68
+    try:
+        cfg = load_config()
+        mem_cfg = cfg.get("memory", {})
+        if mem_cfg.get("retrieval") == "hybrid" or mem_cfg.get("embedding_model"):
+            embedding_model = mem_cfg.get("embedding_model") or "BAAI/bge-small-en-v1.5"
+        if "embedding_min_score" in mem_cfg:
+            embed_min_score = float(mem_cfg["embedding_min_score"])
+    except Exception:
+        pass
+    return MemoryVault(
+        db_path=resolved,
+        embedding_model=embedding_model,
+        embedding_min_score=embed_min_score,
+    )
+
+
+def memory_list(
+    session: str = "default",
+    include_superseded: bool = False,
+    db_path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
     """
-    List facts from the memory database.
+    List facts from the memory database for a session via export_facts.
 
     Args:
-        db_path: Path to database file. If None, uses default.
+        session: Session identifier.
+        include_superseded: If True, include superseded facts.
+        db_path: Path to database file. If None, uses config or default.
         limit: Maximum number of facts to return.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - facts: list of fact dicts (id, content, session_id, created_at)
-        - error: error message (if failed)
+        Dict with keys: success, facts, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "facts": [],
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        validate_session_id(session)
+        vault = _get_memory_vault(db_path)
+        facts = _run_async(vault.export_facts(session, include_superseded=include_superseded))
+        if limit is not None and limit > 0:
+            facts = facts[:limit]
+        return {
+            "success": True,
+            "facts": facts,
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "facts": [],
+            "session": session,
+            "error": str(e),
+        }
 
 
-def memory_search(query: str, db_path: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+def memory_search(
+    session: str = "default",
+    query: Optional[str] = None,
+    limit: int = 10,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Search for facts in the memory database.
+    Uses BM25 keyword retrieval by default, and hybrid retrieval if embeddings are configured.
 
     Args:
+        session: Session identifier.
         query: Search query.
-        db_path: Path to database file. If None, uses default.
         limit: Maximum number of results to return.
+        db_path: Path to database file. If None, uses config or default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - results: list of matching fact dicts with scores
-        - error: error message (if failed)
+        Dict with keys: success, results, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "results": [],
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        if query is None:
+            query = session
+            session = "default"
+
+        validate_session_id(session)
+        vault = _get_memory_vault(db_path)
+
+        async def _search():
+            await vault._ensure_initialized()
+            rows = await vault._backend.retrieve_current(session, limit=100)
+            if not rows or not query.strip():
+                return []
+
+            if vault._embedder is not None and vault._np is not None:
+                keyword_ranked = bm25_rank_facts(rows, query, limit=limit, score_threshold=0.0)
+                results = []
+                seen_keys = set()
+                for score, kw, val, tok in keyword_ranked:
+                    seen_keys.add(kw)
+                    results.append({"key": kw, "value": val, "score": float(score)})
+
+                if len(results) < limit:
+                    remaining_rows = [r for r in rows if r[0] not in seen_keys]
+                    if remaining_rows:
+                        fact_texts = [
+                            f"{kw.replace('_', ' ')}: {val}" if val else kw.replace("_", " ")
+                            for kw, val, _ in remaining_rows
+                        ]
+                        query_emb = vault._np.array(list(vault._embedder.embed([query]))[0])
+                        fact_embs = vault._np.array(list(vault._embedder.embed(fact_texts)))
+                        norms = (
+                            vault._np.linalg.norm(fact_embs, axis=1)
+                            * vault._np.linalg.norm(query_emb)
+                        )
+                        norms[norms == 0] = 1e-9
+                        scores = fact_embs.dot(query_emb) / norms
+                        scored = sorted(zip(scores, remaining_rows), key=lambda x: x[0], reverse=True)
+                        for score, (kw, val, tok) in scored:
+                            if score >= vault._embedding_min_score:
+                                results.append({"key": kw, "value": val, "score": float(score)})
+                            if len(results) >= limit:
+                                break
+                return results[:limit]
+            else:
+                ranked = bm25_rank_facts(rows, query, limit=limit, score_threshold=0.0)
+                return [
+                    {"key": kw, "value": val, "score": float(score)}
+                    for score, kw, val, tok in ranked
+                ]
+
+        results = _run_async(_search())
+        return {
+            "success": True,
+            "results": results,
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "results": [],
+            "session": session,
+            "error": str(e),
+        }
 
 
-def memory_forget(fact_id: int, db_path: Optional[str] = None) -> Dict[str, Any]:
+def memory_forget(
+    session: str = "default",
+    key: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Delete a specific fact from memory.
+    Delete a specific fact from memory via forget_fact.
 
     Args:
-        fact_id: ID of the fact to delete.
-        db_path: Path to database file. If None, uses default.
+        session: Session identifier.
+        key: Fact key to delete.
+        db_path: Path to database file. If None, uses config or default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - deleted: bool
-        - error: error message (if failed)
+        Dict with keys: success, deleted, key, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "deleted": False,
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        if key is None:
+            key = str(session)
+            session = "default"
+
+        validate_session_id(session)
+        validate_keyword(key)
+        vault = _get_memory_vault(db_path)
+        deleted = _run_async(vault.forget_fact(session, key))
+        return {
+            "success": True,
+            "deleted": deleted,
+            "key": key,
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "deleted": False,
+            "key": key or "",
+            "session": session,
+            "error": str(e),
+        }
 
 
-def memory_forget_all(db_path: Optional[str] = None) -> Dict[str, Any]:
+def memory_forget_all(
+    session: str = "default",
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Delete all facts from memory.
+    Delete all facts from memory for a session via forget_session.
 
     Args:
-        db_path: Path to database file. If None, uses default.
+        session: Session identifier.
+        db_path: Path to database file. If None, uses config or default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - count: number of facts deleted
-        - error: error message (if failed)
+        Dict with keys: success, count, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "count": 0,
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        validate_session_id(session)
+        vault = _get_memory_vault(db_path)
+        count = _run_async(vault.forget_session(session))
+        return {
+            "success": True,
+            "count": count,
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "count": 0,
+            "session": session,
+            "error": str(e),
+        }
 
 
-def memory_export(db_path: Optional[str] = None, output_path: Optional[str] = None) -> Dict[str, Any]:
+def memory_export(
+    session: str = "default",
+    path: Optional[str] = None,
+    output_path: Optional[str] = None,
+    include_superseded: bool = False,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Export memory database to JSON.
+    Export memory facts for a session to JSON.
 
     Args:
-        db_path: Path to database file. If None, uses default.
-        output_path: Path to output JSON file. If None, uses "memory_export.json".
+        session: Session identifier.
+        path: Output JSON file path.
+        output_path: Alias for path.
+        include_superseded: If True, include superseded facts.
+        db_path: Path to database file. If None, uses config or default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - output_path: path to exported file
-        - count: number of facts exported
-        - error: error message (if failed)
+        Dict with keys: success, output_path, count, facts, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "output_path": None,
-        "count": 0,
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        validate_session_id(session)
+        vault = _get_memory_vault(db_path)
+        facts = _run_async(vault.export_facts(session, include_superseded=include_superseded))
+        target_path = path or output_path or "memory_export.json"
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(facts, f, indent=2)
+        return {
+            "success": True,
+            "output_path": str(target_path),
+            "count": len(facts),
+            "facts": facts,
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "output_path": path or output_path,
+            "count": 0,
+            "session": session,
+            "error": str(e),
+        }
 
 
-def memory_import(input_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+def memory_import(
+    session: str = "default",
+    path: Optional[str] = None,
+    input_path: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Import memory database from JSON.
+    Import memory facts for a session from JSON.
+    Validates every row before storing; rejects the whole file with a clear error
+    if any row is invalid, and stores via the normal upsert path.
 
     Args:
-        input_path: Path to input JSON file.
-        db_path: Path to database file. If None, uses default.
+        session: Session identifier.
+        path: Input JSON file path.
+        input_path: Alias for path.
+        db_path: Path to database file. If None, uses config or default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - count: number of facts imported
-        - error: error message (if failed)
+        Dict with keys: success, count, session, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "count": 0,
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        resolved_path = path or input_path
+        if resolved_path is None and session and (os.path.exists(session) or session.endswith(".json")):
+            resolved_path = session
+            session = "default"
+
+        validate_session_id(session)
+        if not resolved_path or not os.path.exists(resolved_path):
+            return {
+                "success": False,
+                "count": 0,
+                "session": session,
+                "error": f"Import file not found: '{resolved_path}'",
+            }
+
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except Exception as json_err:
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Invalid JSON in '{resolved_path}': {json_err}",
+                }
+
+        if not isinstance(data, list):
+            return {
+                "success": False,
+                "count": 0,
+                "session": session,
+                "error": f"Invalid format in '{resolved_path}': expected JSON array of fact objects",
+            }
+
+        # Validate every row before storing
+        validated_rows = []
+        for idx, row in enumerate(data):
+            if not isinstance(row, dict):
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: expected object, got {type(row).__name__}",
+                }
+            key = row.get("key") if "key" in row else row.get("keyword")
+            if key is None or not isinstance(key, str) or not key.strip():
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: missing or empty fact key",
+                }
+            if len(key) > MAX_KEYWORD_LENGTH:
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: key too long ({len(key)} chars, max {MAX_KEYWORD_LENGTH})",
+                }
+            try:
+                validate_keyword(key)
+            except ValueError as ve:
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: {ve}",
+                }
+
+            value = row.get("value") if "value" in row else row.get("content")
+            if value is None or not isinstance(value, str):
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: missing or invalid fact value",
+                }
+            if len(value) > MAX_FACT_VALUE_LENGTH:
+                return {
+                    "success": False,
+                    "count": 0,
+                    "session": session,
+                    "error": f"Row {idx} is invalid: value too long ({len(value)} chars, max {MAX_FACT_VALUE_LENGTH})",
+                }
+            validated_rows.append((key, value))
+
+        # All rows valid -> store via the normal upsert path
+        vault = _get_memory_vault(db_path)
+
+        async def _do_import():
+            for key, val in validated_rows:
+                toks = max(1, len(val.split()))
+                await vault.upsert(session, key, val, toks)
+
+        _run_async(_do_import())
+        return {
+            "success": True,
+            "count": len(validated_rows),
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "count": 0,
+            "session": session,
+            "error": str(e),
+        }
 
 
 def sessions(db_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    List all conversation sessions.
+    List all conversation sessions with active fact counts.
 
     Args:
         db_path: Path to database file. If None, uses default.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - sessions: list of session dicts (id, created_at, message_count)
-        - error: error message (if failed)
+        Dict with keys: success, sessions, error.
     """
-    # Placeholder - would integrate with MemoryVault backend
-    return {
-        "success": False,
-        "sessions": [],
-        "error": "Memory integration not yet implemented",
-    }
+    try:
+        resolved_db_path = _resolve_db_path(db_path)
+        vault = _get_memory_vault(resolved_db_path)
+        sess_list = _run_async(vault.list_sessions())
+        return {
+            "success": True,
+            "sessions": sess_list,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "sessions": [],
+            "error": str(e),
+        }
 
 
 def build_projector(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Build a Projector instance from configuration.
+    Build a Projector instance configuration from settings.
 
     Args:
         config: Configuration dictionary.
 
     Returns:
-        Dict with keys:
-        - success: bool
-        - projector_config: dict with projector parameters
-        - error: error message (if failed)
+        Dict with keys: success, projector_config, error.
     """
-    # Placeholder - would build actual Projector instance
+    # Build projector configuration dictionary from provided settings
     return {
         "success": True,
         "projector_config": {
@@ -611,3 +908,4 @@ def build_projector(config: Dict[str, Any]) -> Dict[str, Any]:
         },
         "error": None,
     }
+

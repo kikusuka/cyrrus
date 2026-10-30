@@ -3,7 +3,7 @@ SQLite backend implementation for MemoryVault.
 
 This is the default zero-dependency backend, wrapping the existing
 SQLite logic that was previously hardcoded in MemoryVault.
-"""
+from __future__ import annotations
 import sqlite3
 import time
 import logging
@@ -478,6 +478,30 @@ class SQLiteBackend(MemoryBackend):
             ]
 
         return await self._execute_with_retry(_export)
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """List all sessions with their active fact counts."""
+        def _list(conn):
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='facts'"
+            )
+            if cursor.fetchone() is None:
+                return []
+            rows = conn.execute(
+                "SELECT session_id, COUNT(CASE WHEN invalid_at IS NULL THEN 1 END) "
+                "FROM facts GROUP BY session_id ORDER BY session_id ASC"
+            ).fetchall()
+            return [
+                {
+                    "session_id": row[0],
+                    "fact_count": row[1],
+                    "active_facts": row[1],
+                    "id": row[0],
+                }
+                for row in rows
+            ]
+
+        return await self._execute_with_retry(_list)
 
     def __del__(self):
         """Ensure connection is closed when backend is garbage collected."""

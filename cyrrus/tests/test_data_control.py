@@ -198,6 +198,24 @@ async def test_custom_backend_export_facts_raises_not_implemented():
 
 
 @pytest.mark.asyncio
+async def test_custom_backend_list_sessions_raises_not_implemented():
+    """A custom backend without list_sessions raises NotImplementedError."""
+
+    class NoListSessionsBackend(MemoryBackend):
+        async def init_db(self): pass
+        async def upsert(self, session_id, keyword, value, tokens, max_facts_per_session, max_fact_value_length): pass
+        async def retrieve_current(self, session_id, limit=100): return []
+        async def touch(self, session_id, keywords): pass
+        async def delete_session(self, session_id): return 0
+        async def get_fact_history(self, session_id, keyword): return []
+        async def close(self): pass
+
+    backend = NoListSessionsBackend()
+    with pytest.raises(NotImplementedError, match="list_sessions"):
+        await backend.list_sessions()
+
+
+@pytest.mark.asyncio
 async def test_projector_forget_fact_delegates(tmp_path):
     """Projector.forget_fact delegates to MemoryVault."""
     db_path = str(tmp_path / "proj_forget.db")

@@ -164,10 +164,35 @@ cyrrus models --service ollama
 # Test context routing (dry run)
 cyrrus route "write a python function"
 
-# Memory operations
-cyrrus memory list
-cyrrus memory search "discord bot"
-cyrrus memory export --output backup.json
+# Memory and session operations
+cyrrus memory list --session user_123
+cyrrus memory search "Lisbon" --session user_123
+cyrrus memory export --session user_123 --file backup.json
+cyrrus memory import --session user_123 --file backup.json
+cyrrus memory forget user_city --session user_123 --yes
+cyrrus memory forget-all --session user_123 --yes
+cyrrus sessions
+```
+
+### Memory CLI example
+
+```bash
+$ cyrrus memory list --session user_123
+Facts (2):
+  [user_name] Alice
+  [user_city] Lisbon
+
+$ cyrrus memory search "where does Alice live" --session user_123
+Results (1):
+  - [user_city] Lisbon (score: 0.8124)
+
+$ cyrrus sessions
+Sessions (2):
+  [user_123] (2 active facts)
+  [user_456] (1 active facts)
+
+$ cyrrus memory export --session user_123 --file backup.json
+Exported 2 facts to backup.json
 ```
 
 ### Available services

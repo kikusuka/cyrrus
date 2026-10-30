@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Interactive command-line tools for cyrrus."""
 
 import argparse
@@ -288,73 +289,119 @@ def cmd_route(args) -> None:
 
 def cmd_memory(args) -> None:
     """Memory operations."""
-    config = load_config(project_dir=Path(args.config) if args.config else None)
-    db_path = args.db or config.get("memory", {}).get("db_path")
+    config = load_config(project_dir=Path(args.config) if getattr(args, "config", None) else None)
+    db_path = getattr(args, "db", None) or config.get("memory", {}).get("db_path")
+    session = getattr(args, "session", None) or "default"
 
     if args.action == "list":
-        result = memory_list(db_path=db_path, limit=args.limit)
+        limit = getattr(args, "limit", None)
+        include_superseded = getattr(args, "include_superseded", False)
+        result = memory_list(session=session, include_superseded=include_superseded, db_path=db_path, limit=limit)
     elif args.action == "search":
-        result = memory_search(args.query, db_path=db_path, limit=args.limit)
+        limit = getattr(args, "limit", 10)
+        result = memory_search(session=session, query=args.query, limit=limit, db_path=db_path)
     elif args.action == "forget":
-        if not args.yes:
-            print("Error: --yes required for destructive operations", file=sys.stderr)
+        key = getattr(args, "key", None)
+        if key is None and hasattr(args, "fact_id"):
+            key = str(args.fact_id)
+        if not key:
+            print("Error: Fact key required for forget", file=sys.stderr)
             raise SystemExit(1)
-        result = memory_forget(args.fact_id, db_path=db_path)
+        if not getattr(args, "yes", False):
+            if is_interactive():
+                ans = prompt(f"Delete fact '{key}' for session '{session}'? (y/N)", "n").lower()
+                if ans not in ("y", "yes"):
+                    print("Operation cancelled.", file=sys.stderr)
+                    raise SystemExit(1)
+            else:
+                print("Error: --yes required for destructive operations", file=sys.stderr)
+                raise SystemExit(1)
+        result = memory_forget(session=session, key=key, db_path=db_path)
     elif args.action == "forget-all":
-        if not args.yes:
-            print("Error: --yes required for destructive operations", file=sys.stderr)
-            raise SystemExit(1)
-        result = memory_forget_all(db_path=db_path)
+        if not getattr(args, "yes", False):
+            if is_interactive():
+                ans = prompt(f"Delete ALL facts for session '{session}'? (y/N)", "n").lower()
+                if ans not in ("y", "yes"):
+                    print("Operation cancelled.", file=sys.stderr)
+                    raise SystemExit(1)
+            else:
+                print("Error: --yes required for destructive operations", file=sys.stderr)
+                raise SystemExit(1)
+        result = memory_forget_all(session=session, db_path=db_path)
     elif args.action == "export":
-        result = memory_export(db_path=db_path, output_path=args.output)
+        out_path = getattr(args, "file", None) or getattr(args, "output", None) or getattr(args, "path", None)
+        include_superseded = getattr(args, "include_superseded", False)
+        result = memory_export(session=session, path=out_path, include_superseded=include_superseded, db_path=db_path)
     elif args.action == "import":
-        result = memory_import(args.input, db_path=db_path)
+        in_path = getattr(args, "file", None) or getattr(args, "input", None) or getattr(args, "path", None)
+        if not in_path:
+            print("Error: Input file path required for import", file=sys.stderr)
+            raise SystemExit(1)
+        result = memory_import(session=session, path=in_path, db_path=db_path)
     else:
         print(f"Error: Unknown action '{args.action}'", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
+        if not result.get("success", False):
+            raise SystemExit(1)
     else:
-        if result["success"]:
+        if result.get("success", False):
             if args.action == "list":
-                print(f"Facts ({len(result['facts'])}):")
-                for fact in result["facts"]:
-                    print(f"  [{fact['id']}] {fact['content'][:50]}...")
+                facts = result.get("facts", [])
+                print(f"Facts ({len(facts)}):")
+                for fact in facts:
+                    k = fact.get("key") or fact.get("id") or ""
+                    v = fact.get("value") or fact.get("content") or ""
+                    extra = " [superseded]" if fact.get("invalid_at") else ""
+                    print(f"  [{k}] {v}{extra}")
             elif args.action == "search":
-                print(f"Results ({len(result['results'])}):")
-                for r in result["results"]:
-                    print(f"  - {r['content'][:50]}... (score: {r.get('score', 'N/A')})")
+                results = result.get("results", [])
+                print(f"Results ({len(results)}):")
+                for r in results:
+                    k = r.get("key", "")
+                    v = r.get("value", r.get("content", ""))
+                    score = r.get("score")
+                    score_str = f" (score: {score:.4f})" if isinstance(score, float) else (f" (score: {score})" if score is not None else "")
+                    print(f"  - [{k}] {v}{score_str}")
             elif args.action == "forget":
-                print(f"Fact {args.fact_id} deleted" if result["deleted"] else "Delete failed")
+                k = result.get("key", "")
+                print(f"Fact '{k}' deleted" if result.get("deleted") else "Delete failed")
             elif args.action == "forget-all":
-                print(f"Deleted {result['count']} facts")
+                print(f"Deleted {result.get('count', 0)} facts")
             elif args.action == "export":
-                print(f"Exported {result['count']} facts to {result['output_path']}")
+                print(f"Exported {result.get('count', 0)} facts to {result.get('output_path')}")
             elif args.action == "import":
-                print(f"Imported {result['count']} facts")
+                print(f"Imported {result.get('count', 0)} facts")
         else:
-            print(f"Error: {result['error']}", file=sys.stderr)
+            print(f"Error: {result.get('error')}", file=sys.stderr)
             raise SystemExit(1)
 
 
 def cmd_sessions(args) -> None:
     """List conversation sessions."""
-    config = load_config(project_dir=Path(args.config) if args.config else None)
-    db_path = args.db or config.get("memory", {}).get("db_path")
+    config = load_config(project_dir=Path(args.config) if getattr(args, "config", None) else None)
+    db_path = getattr(args, "db", None) or config.get("memory", {}).get("db_path")
 
     result = sessions(db_path=db_path)
 
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
-    else:
-        if result["success"]:
-            print(f"Sessions ({len(result['sessions'])}):")
-            for sess in result["sessions"]:
-                print(f"  [{sess['id']}] {sess['created_at']} ({sess['message_count']} messages)")
-        else:
-            print(f"Error: {result['error']}", file=sys.stderr)
+        if not result.get("success", False):
             raise SystemExit(1)
+    else:
+        if result.get("success", False):
+            sess_list = result.get("sessions", [])
+            print(f"Sessions ({len(sess_list)}):")
+            for sess in sess_list:
+                sid = sess.get("session_id") or sess.get("id")
+                count = sess.get("active_facts", sess.get("fact_count", 0))
+                print(f"  [{sid}] ({count} active facts)")
+        else:
+            print(f"Error: {result.get('error')}", file=sys.stderr)
+            raise SystemExit(1)
+
 
 
 def cmd_config(args) -> None:
@@ -407,26 +454,25 @@ def cmd_config(args) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work.
+    # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work, along with --db, --session, --yes
     json_parent = argparse.ArgumentParser(add_help=False)
-    json_parent.add_argument("--json", action="store_true", help="output JSON")
+    json_parent.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="output JSON")
+    json_parent.add_argument("--config", default=argparse.SUPPRESS, help="path to project config file")
+    json_parent.add_argument("--db", default=argparse.SUPPRESS, help="path to memory database")
+    json_parent.add_argument("--session", default=argparse.SUPPRESS, help="session ID (default: 'default')")
+    json_parent.add_argument("--yes", "-y", action="store_true", default=argparse.SUPPRESS, help="skip confirmation / confirm destructive operations")
 
-    parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls")
+    parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls", parents=[json_parent])
     parser.add_argument("--version", action="version", version="cyrrus 0.3.0b5")
-    parser.add_argument("--config", help="path to project config file")
-    parser.add_argument("--db", help="path to memory database")
-    parser.add_argument("--session", help="session ID")
-    parser.add_argument("--json", action="store_true", help="output JSON")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
 
     commands = parser.add_subparsers(dest="command", help="Available commands")
 
     # init command (existing)
-    init = commands.add_parser("init", help="create a slides.json configuration")
+    init = commands.add_parser("init", parents=[json_parent], help="create a slides.json configuration")
     init.add_argument("--template", "-t", choices=list(TEMPLATES), help="bot template")
     init.add_argument("--tone", "--personality", dest="tone", help="personality/tone")
     init.add_argument("--output", "-o", default="slides.json", help="output path")
-    init.add_argument("--yes", "-y", action="store_true", help="skip confirmation")
     init.add_argument("--no-input", action="store_true", help="force non-interactive mode")
 
     # doctor command
@@ -461,18 +507,20 @@ def build_parser() -> argparse.ArgumentParser:
     memory_sub = memory.add_subparsers(dest="action", required=True)
     memory_list_cmd = memory_sub.add_parser("list", parents=[json_parent], help="list facts")
     memory_list_cmd.add_argument("--limit", type=int, default=100, help="max facts to return")
+    memory_list_cmd.add_argument("--include-superseded", "--all", action="store_true", default=False, help="include superseded facts")
     memory_search_cmd = memory_sub.add_parser("search", parents=[json_parent], help="search facts")
     memory_search_cmd.add_argument("query", help="search query")
     memory_search_cmd.add_argument("--limit", type=int, default=10, help="max results")
     memory_forget_cmd = memory_sub.add_parser("forget", parents=[json_parent], help="delete a fact")
-    memory_forget_cmd.add_argument("fact_id", type=int, help="fact ID")
-    memory_forget_cmd.add_argument("--yes", action="store_true", help="confirm deletion")
+    memory_forget_cmd.add_argument("key", help="fact key to delete")
     memory_forget_all_cmd = memory_sub.add_parser("forget-all", parents=[json_parent], help="delete all facts")
-    memory_forget_all_cmd.add_argument("--yes", action="store_true", help="confirm deletion")
     memory_export_cmd = memory_sub.add_parser("export", parents=[json_parent], help="export facts to JSON")
-    memory_export_cmd.add_argument("--output", help="output file path")
+    memory_export_cmd.add_argument("path", nargs="?", default=None, help="output file path")
+    memory_export_cmd.add_argument("--file", "-f", "--output", "-o", dest="file", help="output file path")
+    memory_export_cmd.add_argument("--include-superseded", "--all", action="store_true", default=False, help="include superseded facts")
     memory_import_cmd = memory_sub.add_parser("import", parents=[json_parent], help="import facts from JSON")
-    memory_import_cmd.add_argument("input", help="input file path")
+    memory_import_cmd.add_argument("path", nargs="?", default=None, help="input file path")
+    memory_import_cmd.add_argument("--file", "-f", "--input", "-i", dest="file", help="input file path")
 
     # sessions command
     sessions_cmd = commands.add_parser("sessions", parents=[json_parent], help="list conversation sessions")
@@ -494,6 +542,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if not hasattr(args, "json"):
+        args.json = False
+    if not hasattr(args, "config"):
+        args.config = None
+    if not hasattr(args, "db"):
+        args.db = None
+    if not hasattr(args, "session"):
+        args.session = "default"
+    if not hasattr(args, "yes"):
+        args.yes = False
 
     if not args.command:
         # No command: print help and status

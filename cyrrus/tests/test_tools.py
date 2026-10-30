@@ -21,6 +21,8 @@ from cyrrus.tools import (
     build_projector,
 )
 from cyrrus.config import DEFAULTS
+from cyrrus.memory import MemoryVault
+import asyncio
 
 
 class TestListModels:
@@ -159,61 +161,109 @@ class TestRouteDryRun:
 
 
 class TestMemoryFunctions:
-    """Test memory-related functions (placeholders)."""
+    """Test memory-related functions."""
 
-    def test_memory_list_placeholder(self):
-        """Test memory_list returns placeholder."""
-        result = memory_list()
-        assert result["success"] is False
+    def test_memory_list_empty(self, tmp_path):
+        """Test memory_list returns empty list for new session."""
+        db_path = str(tmp_path / "test_mem.db")
+        result = memory_list(session="s1", db_path=db_path)
+        assert result["success"] is True
         assert result["facts"] == []
-        assert "not yet implemented" in result["error"]
+        assert result["error"] is None
 
-    def test_memory_search_placeholder(self):
-        """Test memory_search returns placeholder."""
-        result = memory_search("test query")
-        assert result["success"] is False
-        assert result["results"] == []
-        assert "not yet implemented" in result["error"]
+    def test_memory_list_with_data(self, tmp_path):
+        """Test memory_list returns stored facts."""
+        db_path = str(tmp_path / "test_mem.db")
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("s1", "user_name", "Alice", 1))
+        result = memory_list(session="s1", db_path=db_path)
+        assert result["success"] is True
+        assert len(result["facts"]) == 1
+        assert result["facts"][0]["key"] == "user_name"
+        assert result["facts"][0]["value"] == "Alice"
 
-    def test_memory_forget_placeholder(self):
-        """Test memory_forget returns placeholder."""
-        result = memory_forget(1)
-        assert result["success"] is False
-        assert result["deleted"] is False
-        assert "not yet implemented" in result["error"]
+    def test_memory_search(self, tmp_path):
+        """Test memory_search retrieves matching facts."""
+        db_path = str(tmp_path / "test_mem.db")
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("s1", "user_name", "Alice", 1))
+        asyncio.run(vault.upsert("s1", "user_city", "Lisbon", 1))
+        result = memory_search(session="s1", query="Alice", db_path=db_path)
+        assert result["success"] is True
+        assert len(result["results"]) >= 1
+        assert result["results"][0]["key"] == "user_name"
+        assert result["results"][0]["value"] == "Alice"
+        assert "score" in result["results"][0]
 
-    def test_memory_forget_all_placeholder(self):
-        """Test memory_forget_all returns placeholder."""
-        result = memory_forget_all()
-        assert result["success"] is False
-        assert result["count"] == 0
-        assert "not yet implemented" in result["error"]
+    def test_memory_forget(self, tmp_path):
+        """Test memory_forget deletes a fact."""
+        db_path = str(tmp_path / "test_mem.db")
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("s1", "user_name", "Alice", 1))
+        result = memory_forget(session="s1", key="user_name", db_path=db_path)
+        assert result["success"] is True
+        assert result["deleted"] is True
+        remaining = memory_list(session="s1", db_path=db_path)
+        assert len(remaining["facts"]) == 0
 
-    def test_memory_export_placeholder(self):
-        """Test memory_export returns placeholder."""
-        result = memory_export()
-        assert result["success"] is False
-        assert result["output_path"] is None
-        assert result["count"] == 0
-        assert "not yet implemented" in result["error"]
+    def test_memory_forget_all(self, tmp_path):
+        """Test memory_forget_all deletes all facts for session."""
+        db_path = str(tmp_path / "test_mem.db")
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("s1", "user_name", "Alice", 1))
+        asyncio.run(vault.upsert("s1", "user_city", "Lisbon", 1))
+        result = memory_forget_all(session="s1", db_path=db_path)
+        assert result["success"] is True
+        assert result["count"] == 2
+        remaining = memory_list(session="s1", db_path=db_path)
+        assert len(remaining["facts"]) == 0
 
-    def test_memory_import_placeholder(self):
-        """Test memory_import returns placeholder."""
-        result = memory_import("/path/to/file.json")
-        assert result["success"] is False
-        assert result["count"] == 0
-        assert "not yet implemented" in result["error"]
+    def test_memory_export(self, tmp_path):
+        """Test memory_export exports facts to JSON file."""
+        db_path = str(tmp_path / "test_mem.db")
+        out_file = tmp_path / "export.json"
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("s1", "user_name", "Alice", 1))
+        result = memory_export(session="s1", path=str(out_file), db_path=db_path)
+        assert result["success"] is True
+        assert out_file.exists()
+        assert result["count"] == 1
+        with open(out_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert len(data) == 1
+        assert data[0]["key"] == "user_name"
+
+    def test_memory_import(self, tmp_path):
+        """Test memory_import imports facts from JSON file."""
+        db_path = str(tmp_path / "test_mem.db")
+        in_file = tmp_path / "import.json"
+        with open(in_file, "w", encoding="utf-8") as f:
+            json.dump([{"key": "user_name", "value": "Alice"}], f)
+        result = memory_import(session="s1", path=str(in_file), db_path=db_path)
+        assert result["success"] is True
+        assert result["count"] == 1
+        facts = memory_list(session="s1", db_path=db_path)
+        assert len(facts["facts"]) == 1
+        assert facts["facts"][0]["key"] == "user_name"
+        assert facts["facts"][0]["value"] == "Alice"
 
 
 class TestSessions:
-    """Test sessions function (placeholder)."""
+    """Test sessions function."""
 
-    def test_sessions_placeholder(self):
-        """Test sessions returns placeholder."""
-        result = sessions()
-        assert result["success"] is False
-        assert result["sessions"] == []
-        assert "not yet implemented" in result["error"]
+    def test_sessions_list(self, tmp_path):
+        """Test sessions returns active fact counts across sessions."""
+        db_path = str(tmp_path / "test_sessions.db")
+        vault = MemoryVault(db_path=db_path)
+        asyncio.run(vault.upsert("sess1", "user_name", "Alice", 1))
+        asyncio.run(vault.upsert("sess1", "user_city", "Lisbon", 1))
+        asyncio.run(vault.upsert("sess2", "user_name", "Bob", 1))
+        result = sessions(db_path=db_path)
+        assert result["success"] is True
+        assert len(result["sessions"]) == 2
+        counts = {s["session_id"]: s.get("active_facts", s.get("fact_count", 0)) for s in result["sessions"]}
+        assert counts["sess1"] == 2
+        assert counts["sess2"] == 1
 
 
 class TestBuildProjector:

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import json
 import logging
@@ -1077,6 +1078,12 @@ class Projector:
         Export facts for a session as JSON-serializable dicts.
         """
         return await self.memory.export_facts(session_id, include_superseded)
+
+    async def list_sessions(self) -> list[dict]:
+        """
+        List all sessions with their active fact counts.
+        """
+        return await self.memory.list_sessions()
 
     def _record_trace(self, trace: dict):
         self.last_trace = trace

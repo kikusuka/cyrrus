@@ -1,8 +1,9 @@
+from __future__ import annotations
 import asyncio
 import logging
 import os
 import re
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from .data import Slide
 from .backend import MemoryBackend, validate_session_id, validate_keyword
 from .sqlite_backend import SQLiteBackend, default_db_path
@@ -289,3 +290,13 @@ class MemoryVault:
         validate_session_id(session_id)
         await self._ensure_initialized()
         return await self._backend.export_facts(session_id, include_superseded)
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """
+        List all sessions with their active fact counts.
+
+        Returns:
+            List of dicts with session information.
+        """
+        await self._ensure_initialized()
+        return await self._backend.list_sessions()

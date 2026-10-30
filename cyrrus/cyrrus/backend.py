@@ -4,6 +4,7 @@ Abstract backend interface for MemoryVault storage.
 This allows pluggable storage backends (SQLite, Postgres, Redis, etc.)
 while keeping MemoryVault backend-agnostic.
 """
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Any
 import asyncio
@@ -192,4 +193,15 @@ class MemoryBackend(ABC):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not implement export_facts()"
+        )
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        """
+        List all sessions with their active fact counts.
+
+        Returns:
+            List of dicts with keys: session_id, fact_count (or active_facts).
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement list_sessions()"
         )
