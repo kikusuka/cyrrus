@@ -71,7 +71,7 @@ def test_process_sync_inside_running_loop_raises(tmp_path):
     )
 
     async def inner():
-        with pytest.raises(RuntimeError, match="use await process\(\) instead"):
+        with pytest.raises(RuntimeError, match=r"use await process\(\) instead"):
             bot.process_sync("hello", session_id="s1")
 
     asyncio.run(inner())

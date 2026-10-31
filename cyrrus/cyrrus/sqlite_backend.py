@@ -20,7 +20,7 @@ log = logging.getLogger("cyrrus.sqlite_backend")
 
 
 def default_db_path() -> str:
-    """Resolve the default memory database path.
+    r"""Resolve the default memory database path.
 
     Order: CYRRUS_DB_PATH environment variable if set; else a per-user data
     folder (Windows: %LOCALAPPDATA%\cyrrus\memory.db; macOS/Linux:
