@@ -39,6 +39,8 @@ from .tools import (
     memory_import,
     sessions,
 )
+from .ui.caps import detect_caps
+from .ui.theme import should_animate
 
 
 def is_interactive() -> bool:
@@ -453,6 +455,51 @@ def cmd_config(args) -> None:
             print(f"User config: {result['user']}")
 
 
+def cmd_intro(args) -> None:
+    """Play the intro animation (new command)."""
+    from .ui import anim
+
+    config = load_config(
+        project_dir=Path(args.config) if getattr(args, "config", None) else None
+    )
+    caps = detect_caps()
+    if args.quick:
+        mode = "quick"
+    elif args.static:
+        mode = "static"
+    else:
+        mode = "full"
+    if (
+        args.no_anim
+        or config.get("ui", {}).get("animation", "auto") == "off"
+        or not should_animate(caps, config, "interactive")
+    ):
+        mode = "static"
+    anim.play_intro(
+        caps,
+        sys.stdout,
+        anim.real_sleep,
+        anim._real_kbhit,
+        mode=mode,
+        tier=args.tier,
+    )
+
+
+def cmd_logo(args) -> None:
+    """Show the static logo (new command)."""
+    from .ui import anim
+
+    caps = detect_caps()
+    anim.play_intro(
+        caps,
+        sys.stdout,
+        anim.real_sleep,
+        anim._real_kbhit,
+        mode="static",
+        tier=args.tier,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work, along with --db, --session, --yes
     json_parent = argparse.ArgumentParser(add_help=False)
@@ -465,6 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls", parents=[json_parent])
     parser.add_argument("--version", action="version", version="cyrrus 0.3.0b5")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
+    parser.add_argument("--no-anim", action="store_true", help="disable the intro animation")
 
     commands = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -536,6 +584,20 @@ def build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("value", help="value to set")
     config_sub.add_parser("path", parents=[json_parent], help="show config file paths")
 
+    # intro command
+    intro_cmd = commands.add_parser("intro", parents=[json_parent], help="play the intro animation")
+    intro_cmd.add_argument("--quick", action="store_true", help="short ~0.8s animation")
+    intro_cmd.add_argument("--static", action="store_true", help="show only the static logo")
+    intro_cmd.add_argument(
+        "--tier", choices=["braille", "half", "ascii"], default=None, help="art tier"
+    )
+
+    # logo command
+    logo_cmd = commands.add_parser("logo", parents=[json_parent], help="show the static logo")
+    logo_cmd.add_argument(
+        "--tier", choices=["braille", "half", "ascii"], default=None, help="art tier"
+    )
+
     return parser
 
 
@@ -579,6 +641,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_sessions(args)
     elif args.command == "config":
         cmd_config(args)
+    elif args.command == "intro":
+        cmd_intro(args)
+    elif args.command == "logo":
+        cmd_logo(args)
     else:
         parser.print_help()
         raise SystemExit(2)
