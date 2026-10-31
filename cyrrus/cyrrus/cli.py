@@ -500,6 +500,13 @@ def cmd_logo(args) -> None:
     )
 
 
+def cmd_serve(args) -> None:
+    """Run the local OpenAI-compatible context gateway."""
+    from .gateway import serve
+    config = load_config(project_dir=Path(args.config) if args.config else None)
+    serve(config, host=args.host, port=args.port, log_prompts=args.log_prompts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work, along with --db, --session, --yes
     json_parent = argparse.ArgumentParser(add_help=False)
@@ -598,6 +605,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--tier", choices=["braille", "half", "ascii"], default=None, help="art tier"
     )
 
+    serve_cmd = commands.add_parser("serve", parents=[json_parent], help="run the local OpenAI-compatible gateway")
+    serve_cmd.add_argument("--host", help="listen host (default from config)")
+    serve_cmd.add_argument("--port", type=int, help="listen port (default from config)")
+    serve_cmd.add_argument("--log-prompts", action="store_true", help="include context text in /cyrrus/last")
+
     return parser
 
 
@@ -645,6 +657,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_intro(args)
     elif args.command == "logo":
         cmd_logo(args)
+    elif args.command == "serve":
+        cmd_serve(args)
     else:
         parser.print_help()
         raise SystemExit(2)

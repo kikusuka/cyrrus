@@ -35,6 +35,16 @@ DEFAULTS = {
         "animation": "auto",  # "auto" or "off"
         "onboarded": False,
     },
+    "gateway": {
+        "host": "127.0.0.1",
+        "port": 8787,
+        "mode": "inject",
+        "session": "default",
+        "fail_open": True,
+        "force_model": None,
+        "api_key_env": None,
+        "upstream_timeout": 60.0,
+    },
 }
 
 
@@ -190,6 +200,26 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         if "onboarded" in ui and ui["onboarded"] is not None:
             if not isinstance(ui["onboarded"], bool):
                 raise ValueError("ui.onboarded must be a boolean")
+
+    gateway = normalized.get("gateway")
+    if not isinstance(gateway, dict):
+        raise ValueError("gateway must be a dict")
+    if not isinstance(gateway.get("host"), str) or not gateway["host"]:
+        raise ValueError("gateway.host must be a non-empty string")
+    if not isinstance(gateway.get("port"), int) or not 0 < gateway["port"] < 65536:
+        raise ValueError("gateway.port must be an integer between 1 and 65535")
+    if gateway.get("mode") not in ("inject", "manage"):
+        raise ValueError("gateway.mode must be 'inject' or 'manage'")
+    if not isinstance(gateway.get("session"), str) or not gateway["session"]:
+        raise ValueError("gateway.session must be a non-empty string")
+    if not isinstance(gateway.get("fail_open"), bool):
+        raise ValueError("gateway.fail_open must be a boolean")
+    if gateway.get("force_model") is not None and not isinstance(gateway["force_model"], str):
+        raise ValueError("gateway.force_model must be a string or null")
+    if gateway.get("api_key_env") is not None and not isinstance(gateway["api_key_env"], str):
+        raise ValueError("gateway.api_key_env must be a string or null")
+    if not isinstance(gateway.get("upstream_timeout"), (int, float)) or gateway["upstream_timeout"] <= 0:
+        raise ValueError("gateway.upstream_timeout must be positive")
 
     return normalized
 

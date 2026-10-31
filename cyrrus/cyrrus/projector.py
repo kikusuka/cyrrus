@@ -862,6 +862,36 @@ class Projector:
         self.last_stats = trace["stats"]
         return messages, history
 
+    async def build_context(self, user_text: str, session_id: str = "default"):
+        """Build rendered Cyrrus context without calling a model or storing a turn.
+
+        Returns ``(context, trace)``.  The trace is the normal routing trace and
+        is intended for observability; callers should avoid exposing its prompt
+        fields to untrusted clients.
+        """
+        if not isinstance(user_text, str):
+            raise TypeError("user_text must be a string")
+        trace = {"session_id": session_id, "user_input": user_text, "timestamp": time.time()}
+        await self._prepare_turn(user_text, session_id, trace)
+        return trace["system_message"], trace
+
+    async def record_turn(self, session_id: str, user_text: str, assistant_text: str):
+        """Store a completed external turn and start fact extraction.
+
+        This deliberately does not call the configured model.  Fact extraction
+        is awaited by this method so callers can schedule it in a background
+        worker without delaying a response.
+        """
+        if not isinstance(user_text, str) or not isinstance(assistant_text, str):
+            raise TypeError("turn text must be strings")
+        history = await self._get_history(session_id)
+        lock = await self._session_locks.get(session_id)
+        async with lock:
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": assistant_text})
+        if self.fact_extractor:
+            await self._shadow_extract(user_text, session_id)
+
     async def _process_inner(
         self, user_input: str, session_id: str, trace: dict,
         wait_for_extraction: bool = False,

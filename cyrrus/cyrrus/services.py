@@ -104,6 +104,17 @@ _SERVICES: Dict[str, Service] = {
         api_key_env_var="OPENROUTER_API_KEY",
         help_text="Access to many LLM models via a single API. Requires API key from openrouter.ai.",
     ),
+    "gemini": Service(
+        id="gemini",
+        display_name="Google Gemini",
+        kind="hosted",
+        provider_type="openai_compatible",
+        default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        probe_url=None,
+        models_endpoint="/models",
+        api_key_env_var="GEMINI_API_KEY",
+        help_text="Gemini via its OpenAI-compatible endpoint. Requires a Gemini API key.",
+    ),
     "anthropic": Service(
         id="anthropic",
         display_name="Anthropic",
