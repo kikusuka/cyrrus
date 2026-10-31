@@ -297,18 +297,19 @@ def play_intro(
             if kbhit is not None and kbhit():
                 # Skip to the final frame.
                 frame, _ = frames[final_index]
-                _write(out, CURSOR_HOME + frame)
+                _write(out, (CURSOR_HOME if do_ansi else "") + frame)
                 break
-            _write(out, CURSOR_HOME + frame)
+            _write(out, (CURSOR_HOME if do_ansi else "") + frame)
             sleep(delay)
         else:
             # No skip occurred: ensure the final frame is displayed.
             frame, _ = frames[final_index]
-            _write(out, CURSOR_HOME + frame)
+            _write(out, (CURSOR_HOME if do_ansi else "") + frame)
     except KeyboardInterrupt:
         raise
     finally:
-        _show_cursor(out)
+        if do_ansi:
+            _show_cursor(out)
 
 
 # ---------------------------------------------------------------------------

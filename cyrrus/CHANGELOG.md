@@ -24,6 +24,13 @@
 - Diagnostic checks via `cyrrus doctor`
 - Memory operations: list, search, forget, forget-all, export, import
 - Context routing dry run via `cyrrus route`
+- Terminal UI layer: capability detection (`cyrrus.ui.caps`), theme/palette
+  with ASCII fallbacks (`cyrrus.ui.theme`), generated logo art tiers
+  (`cyrrus.ui.art`), and an intro animation (`cyrrus.ui.anim`)
+- New CLI commands `cyrrus intro` and `cyrrus logo` plus the `--no-anim`
+  flag; `cyrrus ui` respects `ui.animation`/`ui.onboarded`, TTY, CI and
+  `CYRRUS_NO_ANIM`, and never animates over stdout (protocol/non-interactive
+  mode).
 
 ### Changed
 - Extended CLI with new commands while preserving existing `init` functionality
