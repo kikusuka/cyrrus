@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import concurrent.futures
+import importlib.util
 import json
 import os
 import socket
@@ -10,7 +11,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 from .services import get_service, detect_services
-from .config import load_config, redact_secrets
+from .config import (
+    get_project_config_path, get_user_config_path, load_config, redact_secrets,
+)
 from .sqlite_backend import default_db_path, get_backend
 from .memory import MemoryVault
 from .backend import (
@@ -310,6 +313,57 @@ def doctor(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "status": "warning",
             "message": "No service configured",
         })
+
+    # Check onboarding and config files
+    project_config = get_project_config_path()
+    user_config = get_user_config_path()
+    found = [path for path in (project_config, user_config) if path.exists()]
+    onboarded = bool(config.get("ui", {}).get("onboarded"))
+    checks.append({
+        "name": "onboarding",
+        "status": "ok" if found and onboarded else "warning",
+        "message": "onboarded=%s; config files: %s" % (
+            "yes" if onboarded else "no",
+            ", ".join(str(path) for path in found) if found else "none found",
+        ),
+    })
+
+    # Check gateway reachability
+    gateway = config.get("gateway") or {}
+    host = gateway.get("host") or "127.0.0.1"
+    port = gateway.get("port") or 8787
+    health_url = "http://%s:%s/health" % ("[%s]" % host if ":" in host else host, port)
+    reachable = False
+    try:
+        with urllib.request.urlopen(health_url, timeout=0.5):
+            reachable = True
+    except urllib.error.HTTPError:
+        # It answered (for example 401 when an API key is configured).
+        reachable = True
+    except Exception:
+        reachable = False
+    checks.append({
+        "name": "gateway",
+        "status": "ok" if reachable else "warning",
+        "message": ("reachable at %s" if reachable else "not running at %s") % health_url,
+    })
+
+    # Check optional hybrid retrieval packages
+    try:
+        hybrid_available = all(
+            importlib.util.find_spec(name) is not None for name in ("numpy", "fastembed")
+        )
+    except Exception:
+        hybrid_available = False
+    checks.append({
+        "name": "hybrid_retrieval",
+        "status": "ok" if hybrid_available else "warning",
+        "message": (
+            "numpy + fastembed importable"
+            if hybrid_available
+            else "numpy/fastembed not installed; keyword retrieval only (pip install cyrrus[embeddings])"
+        ),
+    })
 
     # Check database
     db_path = config.get("memory", {}).get("db_path") or default_db_path()

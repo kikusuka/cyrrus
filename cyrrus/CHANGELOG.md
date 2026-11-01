@@ -14,6 +14,9 @@
 - Local OpenAI-compatible gateway (`cyrrus serve`) with `inject`/`manage` modes,
   tokenizer/summarizer history compaction, session and skip headers, fail-open
   behavior, model rules, and `/cyrrus/last` traces without prompt text.
+- `cyrrus doctor` reports onboarding status and config files, gateway
+  reachability, and whether the optional hybrid retrieval packages are
+  importable.
 - Services registry with data-driven service definitions (ollama, lmstudio, llama.cpp, openai, mistral, groq, openrouter, anthropic, custom)
 - Configuration system with project and user settings files (`cyrrus.config.json`)
 - Precedence: CLI flags > environment variables > project file > user file > defaults

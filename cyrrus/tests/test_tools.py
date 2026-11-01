@@ -114,6 +114,52 @@ class TestDoctor:
         assert result["checks"][0]["name"] == "config_load"
         assert result["checks"][0]["status"] == "error"
 
+    def test_doctor_reports_onboarding_gateway_and_hybrid(self, tmp_path, monkeypatch):
+        project = tmp_path / "cyrrus.config.json"
+        project.write_text("{}")
+        user = tmp_path / "missing-user.json"
+
+        class _Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr("cyrrus.tools.get_project_config_path", lambda: project)
+        monkeypatch.setattr("cyrrus.tools.get_user_config_path", lambda: user)
+        monkeypatch.setattr("cyrrus.tools.urllib.request.urlopen", lambda *a, **k: _Response())
+        monkeypatch.setattr(
+            "cyrrus.tools.importlib.util.find_spec",
+            lambda name: object() if name in ("numpy", "fastembed") else None,
+        )
+        config = copy.deepcopy(DEFAULTS)
+        config["ui"]["onboarded"] = True
+        checks = {check["name"]: check for check in doctor(config)["checks"]}
+        assert checks["onboarding"]["status"] == "ok"
+        assert str(project) in checks["onboarding"]["message"]
+        assert "onboarded=yes" in checks["onboarding"]["message"]
+        assert checks["gateway"]["status"] == "ok"
+        assert checks["hybrid_retrieval"]["status"] == "ok"
+
+    def test_doctor_warns_when_setup_gateway_and_hybrid_are_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cyrrus.tools.get_project_config_path", lambda: tmp_path / "none.json")
+        monkeypatch.setattr("cyrrus.tools.get_user_config_path", lambda: tmp_path / "none-user.json")
+
+        def _unreachable(*args, **kwargs):
+            raise OSError("refused")
+
+        monkeypatch.setattr("cyrrus.tools.urllib.request.urlopen", _unreachable)
+        monkeypatch.setattr("cyrrus.tools.importlib.util.find_spec", lambda name: None)
+        config = copy.deepcopy(DEFAULTS)
+        config["ui"]["onboarded"] = False
+        checks = {check["name"]: check for check in doctor(config)["checks"]}
+        assert checks["onboarding"]["status"] == "warning"
+        assert checks["gateway"]["status"] == "warning"
+        assert checks["hybrid_retrieval"]["status"] == "warning"
+
 
 class TestRouteDryRun:
     """Test route_dry_run function."""
