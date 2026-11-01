@@ -137,15 +137,29 @@ class Gateway:
         return [{"role": "system", "content": context}] + result
 
     def _compact(self, messages):
+        """Fit client history while retaining system messages and latest turns.
+
+        Context construction remains separate from compaction.  Tool traffic
+        never reaches this method (``prepare`` deliberately treats it as
+        inject-only), so removing old conversational messages cannot alter an
+        agent protocol exchange.
+        """
         budget = self.config.get("context", {}).get("max_context_tokens", 4000)
         result = list(messages)
+
         def size():
-            return sum(len(_text(m.get("content", "")).split()) for m in result)
-        while size() > budget and len(result) > 2:
-            index = next((i for i, item in enumerate(result) if item.get("role") != "system"), None)
+            return sum(self.projector._estimate_tokens(_text(m.get("content", ""))) for m in result)
+
+        # Always protect the newest user/assistant exchange where possible.
+        non_system = [i for i, item in enumerate(result) if item.get("role") != "system"]
+        protected = set(non_system[-2:])
+        while size() > budget:
+            index = next((i for i, item in enumerate(result)
+                          if item.get("role") != "system" and i not in protected), None)
             if index is None:
                 break
             result.pop(index)
+            protected = {i - 1 if i > index else i for i in protected}
         return result
 
     def upstream_url(self, suffix):
