@@ -622,6 +622,10 @@ def cmd_setup(args) -> None:
         return
 
     overrides: Dict[str, Any] = {}
+    if getattr(args, "api_key_stdin", False):
+        overrides["api_key"] = sys.stdin.read().strip() or None
+    if getattr(args, "api_key_env", None):
+        overrides["api_key_env"] = args.api_key_env
     if non_interactive:
         for attr in ("goal", "service", "base_url", "model", "api_key_env",
                      "memory_db", "retrieval", "renderer", "max_context_tokens",
@@ -633,8 +637,6 @@ def cmd_setup(args) -> None:
             val = getattr(args, attr, None)
             if val is not None:
                 overrides[attr] = val
-        if getattr(args, "api_key_stdin", False):
-            overrides["api_key"] = sys.stdin.read().strip() or None
         if getattr(args, "start_gateway", False):
             overrides["start_gateway"] = True
         if getattr(args, "test_message", False):

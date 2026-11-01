@@ -311,6 +311,61 @@ def test_setup_rejects_command_line_api_key(capsys):
         main(["setup", "--api-key", "secret"])
 
 
+def test_api_key_stdin_is_passed_and_not_echoed(monkeypatch, capsys):
+    import io
+
+    seen = {}
+
+    def fake_run_setup(ui, **kwargs):
+        seen.update(kwargs["overrides"])
+        return {"written": [], "cancelled": False}
+
+    monkeypatch.setattr("cyrrus.setup.run_setup", fake_run_setup)
+    monkeypatch.setattr("sys.stdin", io.StringIO("sk-secret\n"))
+    main(["setup", "--non-interactive", "--api-key-env", "OPENAI_KEY", "--api-key-stdin"])
+    assert seen["api_key"] == "sk-secret"
+    assert seen["api_key_env"] == "OPENAI_KEY"
+    assert "sk-secret" not in capsys.readouterr().out
+
+
+def test_api_key_env_flag_applies_interactively(monkeypatch):
+    seen = {}
+
+    def fake_run_setup(ui, **kwargs):
+        seen.update(kwargs["overrides"])
+        return {"written": [], "cancelled": True}
+
+    monkeypatch.setattr("cyrrus.setup.run_setup", fake_run_setup)
+    monkeypatch.setattr("cyrrus.cli.is_interactive", lambda: True)
+    main(["setup", "--api-key-env", "MY_KEY"])
+    assert seen["api_key_env"] == "MY_KEY"
+
+
+@pytest.mark.parametrize("onboarded,expected", [(False, "setup"), (True, "home")])
+def test_plain_cyrrus_enters_setup_or_home(monkeypatch, onboarded, expected):
+    import cyrrus.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "load_config", lambda **kw: {"ui": {"onboarded": onboarded}})
+    monkeypatch.setattr(cli, "cmd_setup", lambda args: calls.append("setup"))
+    monkeypatch.setattr(cli, "cmd_home", lambda args: calls.append("home"))
+    cli.main([])
+    assert calls == [expected]
+
+
+def test_tour_flag_forces_setup(monkeypatch):
+    import cyrrus.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "load_config", lambda **kw: {"ui": {"onboarded": True}})
+    monkeypatch.setattr(cli, "cmd_setup", lambda args: calls.append("setup"))
+    monkeypatch.setattr(cli, "cmd_home", lambda args: calls.append("home"))
+    cli.main(["--tour"])
+    assert calls == ["setup"]
+
+
 def test_home_uses_arrow_select(monkeypatch, capsys):
     import cyrrus.cli as cli
     from cyrrus.ui.caps import Caps

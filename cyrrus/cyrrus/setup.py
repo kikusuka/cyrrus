@@ -415,16 +415,15 @@ def run_setup(
     api_key_env = None
     api_key_value = None
     if svc.api_key_env_var:
-        api_key_env = overrides.get("api_key_env") if non_interactive else None
+        api_key_env = overrides.get("api_key_env")
         if not api_key_env:
             api_key_env = text_input(ui, "API key environment variable name", default=svc.api_key_env_var or "")
         write("")
         write("Set the key yourself with:")
         write(_key_commands(api_key_env or ""))
         write("")
-        if non_interactive:
-            api_key_value = overrides.get("api_key") or None
-        else:
+        api_key_value = overrides.get("api_key") or None
+        if not api_key_value and not non_interactive:
             paste = confirm(ui, "Paste the API key now and save it to .env?", default=False)
             if paste:
                 api_key_value = hidden_input(ui, "API key (input hidden)")
