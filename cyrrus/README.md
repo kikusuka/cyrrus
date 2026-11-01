@@ -425,6 +425,94 @@ bot = Projector(config, llm_call=my_llm, memory=MemoryVault(backend=MyBackend())
 
 Full runnable examples: `cyrrus/examples/custom_modules.py`.
 
+## Guided setup
+
+Run `cyrrus setup` to configure a provider, storage, renderer, starter slides,
+and (optionally) the local gateway. On a first interactive run, plain `cyrrus`
+plays the intro and opens setup; afterwards it opens the home menu. Keep
+`cyrrus home` as the explicit alias, or replay onboarding with `cyrrus --tour`.
+When stdout is not a terminal (or in CI/protocol use), plain `cyrrus` prints
+help instead of prompting.
+
+Menus accept arrow keys and a numbered fallback. For automation:
+
+```
+cyrrus setup --non-interactive --dry-run
+cyrrus setup --non-interactive --service ollama --model qwen2.5-coder:0.5b \
+    --gateway-mode inject --yes
+```
+
+API keys are never accepted as command-line arguments, because command lines
+leak into shell history and process lists. Use `--api-key-env NAME` to store
+only the variable name in the config, or pipe a value to `--api-key-stdin`; the
+value is written only to `.env` (which setup adds to `.gitignore`). Passing
+`--api-key VALUE` exits with an explanation of those two safe options.
+
+## Gateway mode
+
+```
++-------------+    OpenAI-compatible    +---------------------+    +----------+
+| editor /    | ----------------------> | cyrrus serve        | -> | provider |
+| OpenAI SDK  |  http://127.0.0.1:8787  | context + memory    |    | (model)  |
++-------------+ <---------------------- +---------------------+ <- +----------+
+```
+
+Start it with `cyrrus serve`, then point any OpenAI-compatible client at
+`http://127.0.0.1:8787/v1`. `cyrrus setup show zed|python|curl` prints
+copy-ready snippets. The gateway is a proxy, not a chat UI: it adds Cyrrus
+context and forwards the request and response unchanged.
+
+Zed (`settings.json`, extend with your own model names):
+
+```json
+{
+  "language_models": {
+    "openai_compatible": {
+      "cyrrus": {
+        "api_url": "http://127.0.0.1:8787/v1",
+        "available_models": [
+          { "name": "cyrrus", "max_tokens": 8192 }
+        ]
+      }
+    }
+  }
+}
+```
+
+OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="unused")
+reply = client.chat.completions.create(
+    model="cyrrus",  # resolves to the configured provider model
+    messages=[{"role": "user", "content": "What should I work on next?"}],
+    extra_headers={"X-Cyrrus-Session": "work"},
+)
+print(reply.choices[0].message.content)
+```
+
+Modes:
+
+* `inject` (default) keeps the client's history and prepends Cyrrus context.
+* `manage` also compacts older history to the token budget, keeping system
+  messages and the newest exchange; it may use the configured summarizer hook.
+  Requests carrying `tools` or tool messages are always handled as `inject`.
+* `gateway.force_model` overrides the client's model; an empty model or
+  `cyrrus` uses the configured provider model.
+
+Context construction fails open by default: if routing or memory fails, the
+original request is forwarded untouched (`gateway.fail_open: false` makes it an
+error instead). Override the session with `X-Cyrrus-Session: <id>`, or set
+`X-Cyrrus-Skip: 1` to bypass Cyrrus context for one request.
+
+Limits: the gateway speaks the OpenAI chat-completions API only; the native
+Anthropic API is not supported. Editors may make extra utility calls (for
+example thread titles) that also pass through the gateway, and some editor
+features cannot be redirected to it. Requests are capped at 10 MB, and binding
+to a non-loopback host requires `gateway.api_key_env`.
+
 ---
 
 ## License

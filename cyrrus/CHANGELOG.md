@@ -6,6 +6,14 @@
 - Dev utilities moved from ``cyrrus/tools`` to ``cyrrus/devtools`` so the dev folder no longer shadows the ``cyrrus.tools`` module.
 
 ### Added
+- Guided `cyrrus setup` wizard, `cyrrus home` menu, arrow-key selection with a
+  numbered fallback, and an intro that dissolves into the interface.
+- Safer API-key handling: `--api-key-env NAME` stores only the variable name,
+  `--api-key-stdin` saves the value only to `.env`, and `--api-key VALUE` is
+  rejected with guidance because command lines leak into shell history.
+- Local OpenAI-compatible gateway (`cyrrus serve`) with `inject`/`manage` modes,
+  tokenizer/summarizer history compaction, session and skip headers, fail-open
+  behavior, model rules, and `/cyrrus/last` traces without prompt text.
 - Services registry with data-driven service definitions (ollama, lmstudio, llama.cpp, openai, mistral, groq, openrouter, anthropic, custom)
 - Configuration system with project and user settings files (`cyrrus.config.json`)
 - Precedence: CLI flags > environment variables > project file > user file > defaults
