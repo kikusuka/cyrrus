@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- Dev utilities moved from ``cyrrus/tools`` to ``cyrrus/devtools`` so the dev folder no longer shadows the ``cyrrus.tools`` module.
+
 ### Added
 - Services registry with data-driven service definitions (ollama, lmstudio, llama.cpp, openai, mistral, groq, openrouter, anthropic, custom)
 - Configuration system with project and user settings files (`cyrrus.config.json`)

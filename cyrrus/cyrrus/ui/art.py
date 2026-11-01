@@ -1,6 +1,6 @@
 """Generated terminal art for the cyrrus logo. STANDARD LIBRARY ONLY.
 DO NOT EDIT BY HAND. Regenerate with:
-    C:/Users/DELL/cyrrus_scratch/venv/Scripts/python.exe tools/make_terminal_art.py
+    C:/Users/DELL/cyrrus_scratch/venv/Scripts/python.exe devtools/make_terminal_art.py
 Requires Pillow (dev only, scratch venv). This module imports nothing third-party.
 Tiers: LARGE_BRAILLE (40x20, per-row cyan->blue colours), SMALL_BRAILLE (14x7),
 HALF_BLOCK (40x12), ASCII_ART (60x20), WORDMARK (5 rows, 'cyrrus'), WISP_FRAMES.

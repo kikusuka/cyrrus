@@ -1,6 +1,6 @@
 r"""Dev tool: convert the cyrrus logo PNG into terminal art constants.
 
-This tool is DEVELOPMENT ONLY. It lives in ``tools/``, is never packaged and
+This tool is DEVELOPMENT ONLY. It lives in ``devtools/``, is never packaged and
 is never imported by the ``cyrrus`` package (which is standard library only).
 It requires Pillow, installed into the scratch venv under
 ``C:\Users\DELL\cyrrus_scratch\venv``.
@@ -26,7 +26,7 @@ from typing import List, Tuple
 from PIL import Image
 
 # ---------------------------------------------------------------------------
-# Paths (relative to the git root, i.e. the parent of the tools/ folder)
+# Paths (relative to the git root, i.e. the parent of the devtools/ folder)
 # ---------------------------------------------------------------------------
 GIT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOGO_PATH = GIT_ROOT / "assets" / "cyrrus-logo.png"
@@ -370,7 +370,7 @@ def build_art_module() -> str:
     lines: List[str] = []
     lines.append('"""Generated terminal art for the cyrrus logo. STANDARD LIBRARY ONLY.' + "\n")
     lines.append("DO NOT EDIT BY HAND. Regenerate with:" + "\n")
-    lines.append("    C:/Users/DELL/cyrrus_scratch/venv/Scripts/python.exe tools/make_terminal_art.py" + "\n")
+    lines.append("    C:/Users/DELL/cyrrus_scratch/venv/Scripts/python.exe devtools/make_terminal_art.py" + "\n")
     lines.append("Requires Pillow (dev only, scratch venv). This module imports nothing third-party." + "\n")
     lines.append("Tiers: LARGE_BRAILLE (40x20, per-row cyan->blue colours), SMALL_BRAILLE (14x7)," + "\n")
     lines.append("HALF_BLOCK (40x12), ASCII_ART (60x20), WORDMARK (5 rows, 'cyrrus'), WISP_FRAMES." + "\n")

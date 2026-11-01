@@ -1,4 +1,4 @@
-# cyrrus/tools — development utilities
+# cyrrus/devtools — development utilities
 
 This directory holds development-only helpers. Nothing here is packaged with
 `cyrrus`, and the `cyrrus` package never imports from it.
@@ -14,7 +14,7 @@ imports nothing third-party; this tool itself requires Pillow.
 
 Re-run whenever the logo changes:
 
-    C:\Users\DELL\cyrrus_scratch\venv\Scripts\python.exe tools\make_terminal_art.py
+    C:\Users\DELL\cyrrus_scratch\venv\Scripts\python.exe devtools\make_terminal_art.py
 
 This requires Pillow in the scratch venv:
 
