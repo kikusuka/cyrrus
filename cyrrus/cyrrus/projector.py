@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -747,11 +748,11 @@ class Projector:
             try:
                 # Access the underlying database to list recent facts.
                 import sqlite3
-                db_path = self.memory.db_path
-                if db_path and asyncio.os.path.exists(db_path):
+                db_path = self.memory._backend.db_path
+                if db_path and os.path.exists(db_path):
                     with sqlite3.connect(db_path) as conn:
                         rows = conn.execute(
-                            "SELECT keyword, value, relevance FROM facts "
+                            "SELECT keyword, value, tokens FROM facts "
                             "WHERE session_id=? ORDER BY rowid DESC LIMIT 20",
                             (session_id,),
                         ).fetchall()
