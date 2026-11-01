@@ -10,9 +10,9 @@ from .theme import Theme
 class UI:
     """I/O seams for terminal screens; pass fakes in tests."""
     def __init__(self, key_source=None, output=None, caps=None, clock=None, input_fn=None, hidden_fn=None):
-        self.key_source = key_source
         self.output = output or sys.stdout
         self.caps = caps or Caps()
+        self.key_source = key_source or (self._read_key if self.caps.is_tty else None)
         self.clock = clock or time.sleep
         self.input_fn = input_fn or input
         self.hidden_fn = hidden_fn or getpass.getpass
@@ -23,6 +23,29 @@ class UI:
 
     def key(self):
         return self.key_source() if self.key_source else None
+
+    @staticmethod
+    def _read_key():
+        """Read one navigation key on Windows or POSIX terminals."""
+        if sys.platform == "win32":
+            import msvcrt
+            key = msvcrt.getwch()
+            if key in ("\x00", "\xe0"):
+                return {"H": "UP", "P": "DOWN"}.get(msvcrt.getwch(), "")
+            return {"\r": "ENTER", "\x1b": "ESC"}.get(key, key)
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            key = sys.stdin.read(1)
+            if key == "\x1b":
+                rest = sys.stdin.read(2)
+                return {"[A": "UP", "[B": "DOWN"}.get(rest, "ESC")
+            return {"\r": "ENTER", "\n": "ENTER"}.get(key, key)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def panel(ui, title, lines):
@@ -40,7 +63,7 @@ def step_header(ui, current, total, title):
 
 
 def footer(ui):
-    ui.write("↑/↓ move  Enter select  Esc back  q quit")
+    ui.write("Up/Down move  Enter select  Esc back  q quit")
 
 
 def select(ui, prompt, options, default=0):
@@ -89,7 +112,7 @@ def confirm(ui, prompt, default=False):
 
 
 def spinner(ui, label, action):
-    ui.write(label + "…")
+    ui.write(label + "...")
     try:
         result = action()
     except Exception:

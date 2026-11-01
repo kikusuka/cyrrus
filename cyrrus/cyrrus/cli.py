@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 import os
-from typing import Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 from pathlib import Path
 
 from .templates import (
@@ -504,7 +504,162 @@ def cmd_serve(args) -> None:
     """Run the local OpenAI-compatible context gateway."""
     from .gateway import serve
     config = load_config(project_dir=Path(args.config) if args.config else None)
+    banner = (
+        f"\n  Cyrrus gateway\n"
+        f"  Model: {config.get('provider', {}).get('model', '?')}\n"
+        f"  Mode:  {config.get('gateway', {}).get('mode', 'inject')}\n"
+        f"  URL:   http://127.0.0.1:{config.get('gateway', {}).get('port', 8787)}/v1\n"
+        f"  Session: {config.get('gateway', {}).get('session', 'default')}\n"
+        f"  Press Ctrl+C to stop\n"
+        f"  Paste this URL into your editor/chat UI.\n"
+    )
+    print(banner, end="")
     serve(config, host=args.host, port=args.port, log_prompts=args.log_prompts)
+
+
+def cmd_home(args) -> None:
+    """Show the compact home menu."""
+    from .ui.caps import detect_caps
+    from .ui.widgets import UI, select
+    config = load_config(project_dir=Path(args.config) if args.config else None)
+    gateway = config.get("gateway", {})
+    provider = config.get("provider", {})
+    memory = config.get("memory", {})
+    context = config.get("context", {})
+
+    lines = [
+        "cyrrus · by Breezy Labs",
+        "  +--------------------- cyrrus home menu ----------------------+",
+        f"  |  Gateway:   {gateway.get('mode', 'inject'):>15}  |",
+        f"  |  Model:     {provider.get('service', 'none'):>15}  |",
+        f"  |  Memory:    {memory.get('retrieval', 'keyword'):>15}  |",
+        f"  |  Renderer:  {context.get('renderer', 'default'):>15}  |",
+        "  +-------------------------------------------------------------+",
+        "  |  1. Start gateway                   |  2. Connect a model   |",
+        "  |  3. Memory                          |  4. Context style     |",
+        "  |  5. App snippets                    |  6. Doctor            |",
+        "  |  7. Re-run setup                    |  8. Quit              |",
+        "  +-------------------------------------------------------------+",
+        "",
+    ]
+    for line in lines:
+        print(line)
+    ui = UI(caps=detect_caps())
+    choice = select(ui, "Choose an action:", [
+        ("Start gateway", "serve"), ("Connect a model", "connect"),
+        ("Memory", "memory"), ("Context style", "context"),
+        ("App snippets", "snippets"), ("Doctor", "doctor"),
+        ("Re-run setup", "setup"), ("Quit", "quit"),
+    ])
+    if choice == "setup":
+        cmd_setup(args)
+    elif choice == "doctor":
+        cmd_doctor(args)
+    elif choice == "snippets":
+        from .setup import snippet
+        print(snippet("zed", port=gateway.get("port", 8787)))
+    elif choice and choice != "quit":
+        print("Use `cyrrus %s` to continue." % choice)
+
+
+def cmd_logs(args) -> None:
+    """Print the last traces from a running gateway's /cyrrus/last."""
+    import urllib.request
+    import urllib.error
+
+    base = getattr(args, "base_url", None) or "http://127.0.0.1:8787"
+    url = f"{base}/cyrrus/last"
+
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        print(f"Gateway responded with error (HTTP {exc.code}): {exc.reason}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not reach gateway at {url}: {exc}")
+        return
+
+    traces = data.get("requests", [])
+    if not traces:
+        print("No traces available - no requests yet.")
+        return
+
+    # Render nicely without JSON module import at top
+    for trace in traces:
+        path = trace.get("path", "?")
+        method = trace.get("method", "?")
+        # Truncate prompt text if present
+        prompt_text = trace.get("prompt", "")[:30] if trace.get("prompt") else ""
+        print(f"  {method} {path}")
+        if prompt_text:
+            print(f"        prompt: {prompt_text}")
+
+
+def cmd_setup(args) -> None:
+    """Run the guided onboarding wizard."""
+    from .setup import run_setup, snippet
+    from .ui.caps import detect_caps
+    from .ui.widgets import UI
+
+    non_interactive = (
+        getattr(args, "no_input", False)
+        or getattr(args, "non_interactive", False)
+        or getattr(args, "yes", False)
+        or not is_interactive()
+    )
+    dry_run = getattr(args, "dry_run", False)
+    plain = getattr(args, "plain", False)
+    force = getattr(args, "force", False) or (non_interactive and getattr(args, "yes", False))
+    setup_action = getattr(args, "setup_action", None)
+    if getattr(args, "unsafe_api_key", None) is not None:
+        raise SystemExit("--api-key is unsafe because command lines leak into shell history and process lists; use --api-key-env NAME or --api-key-stdin instead.")
+
+    if setup_action == "show":
+        kind = getattr(args, "kind", None)
+        port = getattr(args, "port", 8787) or 8787
+        print(snippet(kind, port=port))
+        return
+
+    overrides: Dict[str, Any] = {}
+    if non_interactive:
+        for attr in ("goal", "service", "base_url", "model", "api_key_env",
+                     "memory_db", "retrieval", "renderer", "max_context_tokens",
+                     "starter_slide", "gateway_mode", "gateway_session", "scope"):
+            val = getattr(args, attr, None)
+            if val is not None:
+                overrides[attr] = val
+        for attr in ("max_facts", "gateway_port"):
+            val = getattr(args, attr, None)
+            if val is not None:
+                overrides[attr] = val
+        if getattr(args, "api_key_stdin", False):
+            overrides["api_key"] = sys.stdin.read().strip() or None
+        if getattr(args, "start_gateway", False):
+            overrides["start_gateway"] = True
+        if getattr(args, "test_message", False):
+            overrides["test_message"] = True
+        if getattr(args, "skip_test", False):
+            overrides["skip_test"] = True
+        if getattr(args, "yes", False):
+            overrides["yes"] = True
+
+    ui = UI(caps=detect_caps())
+    result = run_setup(ui,
+        non_interactive=non_interactive,
+        dry_run=dry_run,
+        plain=plain,
+        force=force,
+        overrides=overrides,
+    )
+    if result.get("cancelled"):
+        print("Onboarding cancelled.")
+        return
+    if not dry_run and result.get("written"):
+        print("")
+        print("Saved:")
+        for path in result["written"]:
+            print("  %s" % path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -520,6 +675,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version="cyrrus 0.3.0b5")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
     parser.add_argument("--no-anim", action="store_true", help="disable the intro animation")
+    parser.add_argument("--tour", action="store_true", help="replay the guided onboarding")
+    parser.add_argument("--plain", action="store_true", help="disable art, animation and colour")
 
     commands = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -610,6 +767,47 @@ def build_parser() -> argparse.ArgumentParser:
     serve_cmd.add_argument("--port", type=int, help="listen port (default from config)")
     serve_cmd.add_argument("--log-prompts", action="store_true", help="include context text in /cyrrus/last")
 
+    # setup command
+    setup_cmd = commands.add_parser("setup", parents=[json_parent], help="run the guided onboarding wizard")
+    setup_cmd.add_argument("--port", type=int, default=8787, help="gateway port for snippets")
+    setup_cmd.add_argument("--no-input", action="store_true", help="force non-interactive mode")
+    setup_cmd.add_argument("--non-interactive", action="store_true", help="force non-interactive mode")
+    setup_cmd.add_argument("--force", action="store_true", help="overwrite existing files without asking")
+    setup_cmd.add_argument("--dry-run", action="store_true", help="show what would be written without writing")
+    setup_cmd.add_argument("--plain", action="store_true", help="disable art, animation and colour")
+    setup_cmd.add_argument("--goal", choices=["gateway", "library", "both"], help="how you will use Cyrrus")
+    setup_cmd.add_argument("--service", help="service id (ollama, lmstudio, openai, ...)")
+    setup_cmd.add_argument("--base-url", help="service base URL")
+    setup_cmd.add_argument("--model", help="model name")
+    setup_cmd.add_argument("--api-key-env", help="API key environment variable name")
+    # Retain this hidden parser entry only to give a safe, actionable error.
+    setup_cmd.add_argument("--api-key", dest="unsafe_api_key", help=argparse.SUPPRESS)
+    setup_cmd.add_argument("--api-key-stdin", action="store_true", help="read an API key from standard input and save it only to .env")
+    setup_cmd.add_argument("--memory-db", choices=["user", "project"], help="where to store facts")
+    setup_cmd.add_argument("--retrieval", choices=["keyword", "hybrid"], help="retrieval strategy")
+    setup_cmd.add_argument("--max-facts", type=int, help="max facts per session")
+    setup_cmd.add_argument("--renderer", choices=["default", "compact"], help="context renderer")
+    setup_cmd.add_argument("--max-context-tokens", type=int, help="context token budget")
+    setup_cmd.add_argument("--starter-slide", choices=["assistant", "support", "coding", "discord", "none"], help="starter slide pack")
+    setup_cmd.add_argument("--gateway-port", type=int, help="gateway port")
+    setup_cmd.add_argument("--gateway-mode", choices=["inject", "manage"], help="gateway mode")
+    setup_cmd.add_argument("--gateway-session", help="default gateway session")
+    setup_cmd.add_argument("--scope", choices=["project", "user"], help="where to save config")
+    setup_cmd.add_argument("--start-gateway", action="store_true", help="start the gateway after saving")
+    setup_cmd.add_argument("--test-message", action="store_true", help="send a test message through the gateway")
+    setup_cmd.add_argument("--skip-test", action="store_true", help="skip the connection test")
+
+    setup_sub = setup_cmd.add_subparsers(dest="setup_action")
+    show_cmd = setup_sub.add_parser("show", help="show an app snippet")
+    show_cmd.add_argument("kind", choices=["zed", "python", "curl"], help="snippet kind")
+    show_cmd.add_argument("--port", type=int, default=8787, help="gateway port for snippets")
+
+    # home command
+    home_cmd = commands.add_parser("home", parents=[json_parent], help="show the compact home menu")
+
+    # logs command
+    logs_cmd = commands.add_parser("logs", parents=[json_parent], help="print the last traces from a running gateway")
+
     return parser
 
 
@@ -629,10 +827,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         args.yes = False
 
     if not args.command:
-        # No command: print help and status
-        parser.print_help()
-        print("\nStatus: Configure a service with 'cyrrus connect' to get started.")
-        raise SystemExit(0)
+        # No command: guide a TTY user into setup or the home menu.  Protocol
+        # and redirected-output invocations remain a help-only operation.
+        config = load_config()
+        if is_interactive():
+            args.command = "setup" if (getattr(args, "tour", False) or not config.get("ui", {}).get("onboarded", False)) else "home"
+            if args.command == "setup":
+                cmd_setup(args)
+            else:
+                cmd_home(args)
+            return
+        else:
+            parser.print_help()
+            print("\nStatus: Configure a service with 'cyrrus connect' to get started.")
+            raise SystemExit(0)
 
     # Dispatch to command handler
     if args.command == "init":
@@ -659,6 +867,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_logo(args)
     elif args.command == "serve":
         cmd_serve(args)
+    elif args.command == "setup":
+        cmd_setup(args)
+    elif args.command == "home":
+        cmd_home(args)
+    elif args.command == "logs":
+        cmd_logs(args)
     else:
         parser.print_help()
         raise SystemExit(2)
