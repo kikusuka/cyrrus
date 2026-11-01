@@ -1,7 +1,7 @@
 """Tests for :mod:`cyrrus.ui.art` and the dev art generator.
 
 The generated :mod:`cyrrus.ui.art` module is standard library only. The dev
-tool (``tools/make_terminal_art.py``) uses Pillow but is not packaged and is
+tool (``devtools/make_terminal_art.py``) uses Pillow but is not packaged and is
 never imported by the package.
 """
 
@@ -59,7 +59,7 @@ def test_wordmark_has_five_rows():
 def test_dev_tool_regenerates_identical_art():
     """The generator is deterministic; skipping when Pillow is unavailable."""
     try:
-        from tools.make_terminal_art import build_art_module  # noqa: import-not-at-top
+        from devtools.make_terminal_art import build_art_module  # noqa: import-not-at-top
     except ImportError:  # Pillow or the tool is unavailable in this env
         pytest.skip("Pillow/dev tool not importable")
     first = build_art_module()
