@@ -142,7 +142,8 @@ class Gateway:
         Context construction remains separate from compaction.  Tool traffic
         never reaches this method (``prepare`` deliberately treats it as
         inject-only), so removing old conversational messages cannot alter an
-        agent protocol exchange.
+        agent protocol exchange.  The projector's tokenizer budgets the result
+        and its optional summarizer hook condenses the removed turns.
         """
         budget = self.config.get("context", {}).get("max_context_tokens", 4000)
         result = list(messages)
@@ -153,14 +154,36 @@ class Gateway:
         # Always protect the newest user/assistant exchange where possible.
         non_system = [i for i, item in enumerate(result) if item.get("role") != "system"]
         protected = set(non_system[-2:])
+        dropped = []
         while size() > budget:
             index = next((i for i, item in enumerate(result)
                           if item.get("role") != "system" and i not in protected), None)
             if index is None:
                 break
-            result.pop(index)
+            dropped.append(result.pop(index))
             protected = {i - 1 if i > index else i for i in protected}
+
+        summary = self._summarize(dropped)
+        if summary:
+            insert_at = 0
+            while insert_at < len(result) and result[insert_at].get("role") == "system":
+                insert_at += 1
+            result.insert(insert_at, {"role": "system", "content": summary})
         return result
+
+    def _summarize(self, dropped):
+        summarizer = getattr(self.projector, "history_summarizer", None)
+        if not summarizer or not dropped:
+            return None
+        try:
+            from .projector import _run_history_summarizer
+            summary = asyncio.run(_run_history_summarizer(
+                summarizer, dropped, getattr(self.projector, "summarizer_timeout", 10.0)
+            ))
+        except Exception as exc:
+            log.warning("Cyrrus manage-mode summarizer failed: %s", exc)
+            return None
+        return summary.strip() if isinstance(summary, str) and summary.strip() else None
 
     def upstream_url(self, suffix):
         base = self.config.get("provider", {}).get("base_url")
@@ -245,7 +268,12 @@ def make_handler(gateway):
                 self.end_headers()
                 chunks = []; streaming = bool(payload.get("stream"))
                 while True:
-                    data = response.read(1024 if streaming else -1)
+                    if not streaming:
+                        data = response.read()
+                    elif hasattr(response, "read1"):
+                        data = response.read1(4096)
+                    else:
+                        data = response.read(4096)
                     if not data: break
                     chunks.append(data); self.wfile.write(data); self.wfile.flush()
                     if not streaming: break
