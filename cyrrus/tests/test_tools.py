@@ -1,6 +1,7 @@
 """
 Tests for the tools module.
 """
+import copy
 import json
 import tempfile
 from pathlib import Path
@@ -271,7 +272,7 @@ class TestBuildProjector:
 
     def test_build_projector_success(self):
         """Test building projector config."""
-        config = DEFAULTS.copy()
+        config = copy.deepcopy(DEFAULTS)
         config["provider"]["service"] = "ollama"
         config["provider"]["model"] = "llama3.2"
         result = build_projector(config)

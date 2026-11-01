@@ -1,6 +1,7 @@
 """
 Tests for the configuration system.
 """
+import copy
 import json
 import os
 import tempfile
@@ -134,7 +135,7 @@ class TestValidateConfig:
 
     def test_validate_config_provider_invalid_service(self):
         """Test provider.service type validation."""
-        config = DEFAULTS.copy()
+        config = copy.deepcopy(DEFAULTS)
         config["provider"]["service"] = 123
         with pytest.raises(ValueError, match="provider.service must be a string"):
             validate_config(config)
