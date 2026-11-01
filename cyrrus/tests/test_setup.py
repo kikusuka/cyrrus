@@ -366,6 +366,21 @@ def test_tour_flag_forces_setup(monkeypatch):
     assert calls == ["setup"]
 
 
+@pytest.mark.parametrize("onboarded,expected", [(False, "full"), (True, "quick")])
+def test_plain_cyrrus_plays_intro_before_target(monkeypatch, onboarded, expected):
+    import cyrrus.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "load_config", lambda **kw: {"ui": {"onboarded": onboarded}})
+    monkeypatch.setattr(cli, "cmd_setup", lambda args: None)
+    monkeypatch.setattr(cli, "cmd_home", lambda args: None)
+    monkeypatch.setattr(cli, "_entry_intro", lambda args, config, mode: calls.append(mode))
+    cli.main([])
+    assert calls == [expected]
+
+
+
 def test_home_uses_arrow_select(monkeypatch, capsys):
     import cyrrus.cli as cli
     from cyrrus.ui.caps import Caps

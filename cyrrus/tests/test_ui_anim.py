@@ -141,3 +141,37 @@ def test_play_intro_no_ansi_when_colour_none():
     caps = _caps(color_depth=COLOR_NONE, ansi=False)
     val, _ = _run_play(caps, [0.0], mode="quick")
     assert "\x1b[" not in val
+
+
+def test_intro_ends_blank_after_attribution_art():
+    caps = _caps()
+    for mode in ("full", "quick"):
+        frames = anim.intro_frames(caps, mode=mode)
+        assert frames[-1][0] == ""
+        text = "\n".join(frame for frame, _ in frames)
+        assert "by Breezy Labs" in text
+
+
+def test_full_art_frames_keep_the_attribution():
+    frames = anim.intro_frames(_caps(), mode="full")
+    attribution_frames = [frame for frame, _ in frames if "by Breezy Labs" in frame]
+    assert len(attribution_frames) >= 3
+    # The attribution frames include the Breezy Labs art, not just the text.
+    assert any(len(frame.splitlines()) > 1 for frame in attribution_frames)
+
+
+def test_play_intro_clears_screen_after_sequence():
+    caps = _caps()
+    out = io.StringIO()
+    anim.play_intro(caps, out, lambda d: None, None, mode="quick", clear_after=True)
+    value = out.getvalue()
+    assert anim.CLEAR_SCREEN in value
+    assert value.endswith(anim.SHOW_CURSOR)
+
+
+def test_play_intro_does_not_clear_plain_output():
+    caps = _caps(color_depth=COLOR_NONE, ansi=False)
+    out = io.StringIO()
+    anim.play_intro(caps, out, lambda d: None, None, mode="quick", clear_after=True)
+    assert anim.CLEAR_SCREEN not in out.getvalue()
+

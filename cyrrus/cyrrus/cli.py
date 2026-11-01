@@ -471,6 +471,7 @@ def cmd_intro(args) -> None:
         mode = "full"
     if (
         args.no_anim
+        or getattr(args, "plain", False)
         or config.get("ui", {}).get("animation", "auto") == "off"
         or not should_animate(caps, config, "interactive")
     ):
@@ -482,6 +483,24 @@ def cmd_intro(args) -> None:
         anim._real_kbhit,
         mode=mode,
         tier=args.tier,
+        clear_after=(mode != "static"),
+    )
+
+
+def _entry_intro(args, config, mode: str) -> None:
+    """Play the intro before entering the wizard or home menu, when allowed."""
+    from .ui import anim
+    from .ui.caps import detect_caps
+    from .ui.theme import should_animate
+
+    if getattr(args, "no_anim", False) or getattr(args, "plain", False):
+        return
+    caps = detect_caps()
+    if not should_animate(caps, config, "interactive"):
+        return
+    anim.play_intro(
+        caps, sys.stdout, anim.real_sleep, anim._real_kbhit,
+        mode=mode, clear_after=True,
     )
 
 
@@ -833,7 +852,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         # and redirected-output invocations remain a help-only operation.
         config = load_config()
         if is_interactive():
-            args.command = "setup" if (getattr(args, "tour", False) or not config.get("ui", {}).get("onboarded", False)) else "home"
+            target = "setup" if (getattr(args, "tour", False) or not config.get("ui", {}).get("onboarded", False)) else "home"
+            _entry_intro(args, config, "full" if target == "setup" else "quick")
+            args.command = target
             if args.command == "setup":
                 cmd_setup(args)
             else:

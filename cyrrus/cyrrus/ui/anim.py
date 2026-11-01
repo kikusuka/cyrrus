@@ -29,6 +29,7 @@ from .caps import Caps, COLOR_NONE
 HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
 CURSOR_HOME = "\x1b[H"
+CLEAR_SCREEN = "\x1b[2J\x1b[H"
 
 _atexit_registered = False
 
@@ -179,7 +180,8 @@ def intro_frames(
     frames: List[Tuple[str, float]] = []
 
     def add(frame: str, delay: float) -> None:
-        frames.append((_clamp_width(frame, width), delay))
+        lines = [_clamp_width(line, width) for line in frame.split("\n")]
+        frames.append(("\n".join(lines), delay))
 
     # Small static logo used for quick/static/settle.
     small_logo = "\n".join(_center_block(logo_lines, width))
@@ -188,14 +190,14 @@ def intro_frames(
         add(small_logo, 0.0)
         return frames
 
-    # Tagline.
-    tagline = "a Breezy Labs product"
+    # Attribution appears between the product wordmark and the Breezy art.
+    tagline = "by Breezy Labs"
 
     # Per-tier wisp art (ASCII tier keeps everything ASCII).
     wisps = art.WISP_FRAMES
 
     if mode == "quick":
-        # Abbreviated: wisps -> word -> settle. ~0.8 s total.
+        # Abbreviated: wisps -> word -> attribution art -> clear. ~0.8 s.
         for wf in wisps[:2]:
             add("\n".join(_center_block(wf, width)), 0.12)
         word = "\n".join(
@@ -204,8 +206,13 @@ def intro_frames(
                 width,
             )
         )
-        add(word, 0.25)
-        add(small_logo, 0.25)
+        add(word, 0.20)
+        attribution = logo_lines + [""] + [tagline]
+        lines = _center_block(logo_lines, width) + [""] + _center_block([tagline], width)
+        add("\n".join(lines), 0.16)
+        for frame in _dissolve_frames(attribution, width, ansi, steps=1):
+            add(frame, 0.08)
+        add("", 0.0)
         return frames
 
     # ---- full mode (<= ~3.2 s) ----
@@ -235,20 +242,26 @@ def intro_frames(
     # 5. Tagline fades in.
     add("\n".join(_center_block([tagline], width)), 0.25)
 
-    # 6. Logo draws in stages: reveal rows top to bottom, bubbles last, blink.
+    # 6. Breezy Labs art draws in under the attribution.
+    attribution = logo_lines + [""] + [tagline]
     n_rows = len(logo_lines)
     stage_steps = max(2, min(4, n_rows // 5))
     for stage in range(1, stage_steps + 1):
         n = n_rows * stage // stage_steps
         part = logo_lines[:n] + [""] * max(0, n_rows - n)
-        add("\n".join(_center_block(part, width)), 0.12)
+        lines = _center_block(part, width) + [""] + _center_block([tagline], width)
+        add("\n".join(lines), 0.12)
     # Blink the robot's eyes once (toggle a row) while the logo is held.
-    blink_on = "\n".join(_center_block(logo_lines, width))
+    blink = _center_block(logo_lines, width) + [""] + _center_block([tagline], width)
+    blink_on = "\n".join(blink)
     add(blink_on, 0.08)
     add(blink_on, 0.08)
 
-    # 7. Tagline stays, settle into the small static logo.
-    add(small_logo, 0.26)
+    # 7. Dissolve the attribution art, then leave a blank frame so the caller
+    # can clear the screen and enter its interface without a lingering logo.
+    for frame in _dissolve_frames(attribution, width, ansi, steps=3):
+        add(frame, 0.10)
+    add("", 0.0)
     return frames
 
 
@@ -276,13 +289,16 @@ def play_intro(
     kbhit: Optional[Callable[[], bool]] = None,
     mode: str = "full",
     tier: Optional[str] = None,
+    clear_after: bool = False,
 ) -> None:
     """Play the intro animation on ``out``.
 
     ``sleep`` is called with each frame's delay and may be fake in tests.
     ``kbhit``, if provided, is polled before each frame; a truthy result skips
-    to the final frame. The cursor is restored in ``finally`` (and via
-    ``atexit``) even when ``sleep`` raises ``KeyboardInterrupt``.
+    to the final frame. When ``clear_after`` is set the screen is cleared before
+    returning so the caller's interface starts on a blank screen. The cursor is
+    restored in ``finally`` (and via ``atexit``) even when ``sleep`` raises
+    ``KeyboardInterrupt``.
     """
     _ensure_atexit()
     do_ansi = caps.ansi and caps.color_depth != COLOR_NONE
@@ -309,6 +325,8 @@ def play_intro(
         raise
     finally:
         if do_ansi:
+            if clear_after:
+                _write(out, CLEAR_SCREEN)
             _show_cursor(out)
 
 
