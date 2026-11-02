@@ -77,7 +77,8 @@ _NUMBERED_SCRIPT = [
     "",      # step 6: session = default
     "y",     # step 7: save = yes
     "",      # step 7: scope = project (default)
-    "",      # buffer: extra read compensation
+    "",      # end: "Send a test message?" = no (default)
+    "",      # end: "Start the gateway now?" = no (default)
 ]
 
 
@@ -265,6 +266,8 @@ def test_arrow_keys_onboarding(tmp_path, monkeypatch):
             "",   # step 6: port default
             "",   # step 6: session default
             "y",  # step 7: save yes
+            "",   # end: "Send a test message?" = no (default)
+            "",   # end: "Start the gateway now?" = no (default)
         ],
         keys=[
             "DOWN", "ENTER",  # step 2 goal: library
@@ -385,12 +388,17 @@ def test_home_uses_arrow_select(monkeypatch, capsys):
     import cyrrus.cli as cli
     from cyrrus.ui.caps import Caps
 
-    keys = iter(["DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "ENTER"])
+    keys = iter(["DOWN", "ENTER"])
     monkeypatch.setattr(cli, "load_config", lambda **kw: {"provider": {}, "memory": {}, "context": {}, "gateway": {}})
     monkeypatch.setattr("cyrrus.ui.caps.detect_caps", lambda: Caps(is_tty=True))
     monkeypatch.setattr("cyrrus.ui.widgets.UI._read_key", staticmethod(lambda: next(keys)))
     cli.cmd_home(type("Args", (), {"config": None})())
-    assert "cyrrus home menu" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "cyrrus · by Breezy Labs" in out
+    assert "Gateway:  inject" in out
+    assert "Choose an action:" in out
+    # Arrow select moved to the second option ("Connect a model" -> connect).
+    assert "Use `cyrrus connect` to continue." in out
 
 # ---------------------------------------------------------------------------
 # Existing file not overwritten without confirmation / --force
@@ -400,8 +408,16 @@ def test_existing_file_not_overwritten_without_confirmation(tmp_path, monkeypatc
     _patch_network(monkeypatch)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "cyrrus.config.json").write_text("EXISTING\n")
-    # save="y", overwrite confirm="n", scope=""
-    inputs = list(_NUMBERED_SCRIPT[:-1]) + ["n", ""]
+    # steps 1-6, save="y", scope="", overwrite="n", test message="", start gateway=""
+    inputs = (
+        [""] * 14   # steps 1-6 (welcome, goal, service, base_url, model,
+                    # storage, retrieval, max_facts, renderer, preset, starter,
+                    # port, mode, session)
+        + ["y"]      # step 7: save = yes
+        + [""]       # step 7: scope = project (default)
+        + ["n"]      # overwrite existing cyrrus.config.json = no
+        + ["", ""]   # end: test message = no, start gateway = no (defaults)
+    )
     ui = ScriptedUI(inputs=inputs)
     result = run_setup(ui, non_interactive=False, plain=True, force=False)
     assert not result.get("cancelled")
