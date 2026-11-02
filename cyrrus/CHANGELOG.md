@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0b6
 
 ### Changed
 - Dev utilities moved from ``cyrrus/tools`` to ``cyrrus/devtools`` so the dev folder no longer shadows the ``cyrrus.tools`` module.
