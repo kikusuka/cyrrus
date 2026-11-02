@@ -307,6 +307,69 @@ def _write_if(path: Path, text: str, dry_run: bool, force: bool, ui: UI) -> bool
         return False
 
 
+def _run_test_message(ui: UI, config: Dict[str, Any], state: Dict[str, Any]) -> None:
+    """Start an in-process gateway on a free port against the configured
+    upstream, send one test message, print the reply and what Cyrrus
+    injected, then stop the gateway.
+
+    Used by the wizard's "Send a test message through the gateway?" step so
+    the user can see context injection for real before deciding whether to
+    leave the gateway running in the foreground.
+    """
+    import json
+    import threading
+    import time
+    from urllib.request import Request, urlopen
+
+    from .gateway import create_server
+
+    test_config = json.loads(json.dumps(config))
+    test_config["gateway"] = dict(config.get("gateway", {}))
+    test_config["gateway"]["host"] = "127.0.0.1"
+    test_config["gateway"]["port"] = 0  # let the OS pick a free port
+
+    server = create_server(test_config, port=0)
+    port = server.server_address[1]
+    base = "http://127.0.0.1:%d/v1" % port
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        time.sleep(0.25)
+        message = "my name is Alice and I live in Lisbon"
+        model = config.get("provider", {}).get("model", "cyrrus")
+        payload = {"model": model, "messages": [{"role": "user", "content": message}]}
+        request = Request(
+            base + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=15) as response:
+            reply_data = json.loads(response.read().decode("utf-8"))
+        reply = reply_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # What Cyrrus injected: decision trace from the last request.
+        fact_keys: List[str] = []
+        try:
+            traces = json.load(urlopen(base.replace("/v1", "") + "/cyrrus/last")).get("requests", [])
+            if traces:
+                fact_keys = traces[-1].get("fact_keys", [])
+        except Exception:  # noqa: BLE001 - best effort display
+            pass
+
+        ui.write("")
+        ui.write("Test message through the gateway:")
+        ui.write("  you: %s" % message)
+        ui.write("  reply: %s" % reply)
+        ui.write("  cyrrus injected facts: %s" % (", ".join(fact_keys) if fact_keys else "(none yet)"))
+    finally:
+        try:
+            server.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        server.server_close()
+
+
 def run_setup(
     ui: UI,
     *,
@@ -671,16 +734,32 @@ def run_setup(
 
     write("")
     write("Setup complete. Cyrrus is configured.")
+
+    if dry_run:
+        write("Dry run finished; nothing was written.")
+        return {
+            "config": config,
+            "written": [],
+            "dry_run": True,
+            "scope": scope,
+            "start_gateway": False,
+            "test_message": False,
+            "cancelled": False,
+        }
+
     start_gw = False
     test_msg = False
     if state["goal"] in ("gateway", "both"):
         if non_interactive:
-            start_gw = bool(overrides.get("start_gateway"))
             test_msg = bool(overrides.get("test_message"))
+            start_gw = bool(overrides.get("start_gateway"))
         else:
+            test_msg = confirm(ui, "Send a test message through the gateway?", default=False)
+        if test_msg:
+            _run_test_message(ui, config, state)
+        if not non_interactive:
             start_gw = confirm(ui, "Start the gateway now?", default=False)
-            if start_gw:
-                test_msg = confirm(ui, "Send a test message through the gateway?", default=False)
+
     return {
         "config": config,
         "written": written,
