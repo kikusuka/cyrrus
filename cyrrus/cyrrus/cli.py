@@ -476,6 +476,8 @@ def cmd_intro(args) -> None:
         or not should_animate(caps, config, "interactive")
     ):
         mode = "static"
+    # Never clear the screen: ``cyrrus intro`` must always end on the
+    # one-line header, never a blank screen.
     anim.play_intro(
         caps,
         sys.stdout,
@@ -483,8 +485,9 @@ def cmd_intro(args) -> None:
         anim._real_kbhit,
         mode=mode,
         tier=args.tier,
-        clear_after=(mode != "static"),
+        clear_after=False,
     )
+    print("cyrrus · by Breezy Labs")
 
 
 def _entry_intro(args, config, mode: str) -> None:
@@ -537,33 +540,33 @@ def cmd_serve(args) -> None:
 
 
 def cmd_home(args) -> None:
-    """Show the compact home menu."""
+    """Show the compact home menu.
+
+    The status panel above is rendered with the same panel widget as the
+    wizard (rounded Unicode when the terminal supports it, ASCII as a
+    fallback), so every row is padded to the same width and the right border
+    sits in a single column. Below it there is exactly one way to choose: an
+    arrow-key select list that falls back to a numbered list only when keys
+    are unavailable (non-TTY).
+    """
     from .ui.caps import detect_caps
-    from .ui.widgets import UI, select
-    config = load_config(project_dir=Path(args.config) if args.config else None)
+    from .ui.widgets import UI, panel, select
+    config = load_config(project_dir=Path(getattr(args, "config", None)) if getattr(args, "config", None) else None)
     gateway = config.get("gateway", {})
     provider = config.get("provider", {})
     memory = config.get("memory", {})
     context = config.get("context", {})
 
-    lines = [
-        "cyrrus · by Breezy Labs",
-        "  +--------------------- cyrrus home menu ----------------------+",
-        f"  |  Gateway:   {gateway.get('mode', 'inject'):>15}  |",
-        f"  |  Model:     {provider.get('service', 'none'):>15}  |",
-        f"  |  Memory:    {memory.get('retrieval', 'keyword'):>15}  |",
-        f"  |  Renderer:  {context.get('renderer', 'default'):>15}  |",
-        "  +-------------------------------------------------------------+",
-        "  |  1. Start gateway                   |  2. Connect a model   |",
-        "  |  3. Memory                          |  4. Context style     |",
-        "  |  5. App snippets                    |  6. Doctor            |",
-        "  |  7. Re-run setup                    |  8. Quit              |",
-        "  +-------------------------------------------------------------+",
-        "",
-    ]
-    for line in lines:
-        print(line)
     ui = UI(caps=detect_caps())
+    ui.write("cyrrus · by Breezy Labs")
+    ui.write("")
+    panel(ui, "cyrrus home", [
+        "Gateway:  %s" % gateway.get("mode", "inject"),
+        "Model:    %s" % provider.get("service", "none"),
+        "Memory:   %s" % memory.get("retrieval", "keyword"),
+        "Renderer: %s" % context.get("renderer", "default"),
+    ])
+    ui.write("")
     choice = select(ui, "Choose an action:", [
         ("Start gateway", "serve"), ("Connect a model", "connect"),
         ("Memory", "memory"), ("Context style", "context"),
@@ -576,9 +579,9 @@ def cmd_home(args) -> None:
         cmd_doctor(args)
     elif choice == "snippets":
         from .setup import snippet
-        print(snippet("zed", port=gateway.get("port", 8787)))
+        ui.write(snippet("zed", port=gateway.get("port", 8787)))
     elif choice and choice != "quit":
-        print("Use `cyrrus %s` to continue." % choice)
+        ui.write("Use `cyrrus %s` to continue." % choice)
 
 
 def cmd_logs(args) -> None:
@@ -682,6 +685,12 @@ def cmd_setup(args) -> None:
         for path in result["written"]:
             print("  %s" % path)
 
+    if result.get("start_gateway"):
+        # Run the gateway in the foreground with the banner (blocking until
+        # the user stops it with Ctrl+C).
+        from .gateway import serve
+        serve(result["config"])
+
 
 def build_parser() -> argparse.ArgumentParser:
     # Shared so both `cyrrus --json CMD` and `cyrrus CMD --json` work, along with --db, --session, --yes
@@ -693,7 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     json_parent.add_argument("--yes", "-y", action="store_true", default=argparse.SUPPRESS, help="skip confirmation / confirm destructive operations")
 
     parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls", parents=[json_parent])
-    parser.add_argument("--version", action="version", version="cyrrus 0.3.0b5")
+    parser.add_argument("--version", action="version", version="cyrrus 0.3.0b6")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
     parser.add_argument("--no-anim", action="store_true", help="disable the intro animation")
     parser.add_argument("--tour", action="store_true", help="replay the guided onboarding")
