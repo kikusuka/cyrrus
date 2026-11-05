@@ -151,13 +151,24 @@ class SessionFactIndex:
                 (idx, s) for idx, s in enumerate(acc) if s > score_threshold
             ]
 
-        # top_k uses a stable descending sort over ascending doc indices, so
-        # ties resolve to the lower doc index first. Sorting by (-score, idx)
-        # is that exact total order; nsmallest picks its first `limit`.
+        # Deterministic tie-break: (score desc, keyword asc, doc index asc).
+        # The keyword is the stable fact id, so the order is independent of
+        # the row/recency order the index was built from. This mirrors
+        # bm25_rank_facts exactly.
+        #
+        # DELIBERATE BEHAVIOR CHANGE: ties used to break by doc index (the
+        # last_accessed DESC row order), so touch() could reorder ties and a
+        # cached index would diverge from a fresh ranking.
+        facts = self.facts
+
+        def _key(item):
+            idx, score = item
+            return (-score, facts[idx][0], idx)
+
         if len(filtered) > limit:
-            top = heapq.nsmallest(limit, filtered, key=lambda x: (-x[1], x[0]))
+            top = heapq.nsmallest(limit, filtered, key=_key)
         else:
-            filtered.sort(key=lambda x: (-x[1], x[0]))
+            filtered.sort(key=_key)
             top = filtered
 
         ranked_out = []
