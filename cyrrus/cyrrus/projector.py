@@ -998,6 +998,17 @@ class Projector:
         task still pending — so without an explicit flush the turn's facts would
         be lost. Await flush() in the same run to store them before returning.
         """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "ask() cannot be called from inside a running event loop — "
+                "use `await bot.process(...)` there instead (followed by "
+                "`await bot.flush()` if you need the turn's facts stored)"
+            )
+
         async def _run():
             response = await self.process(user_input, session_id=session_id)
             await self.flush()

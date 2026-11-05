@@ -28,6 +28,8 @@ import threading
 
 import asyncio
 
+import pytest
+
 from cyrrus import Projector
 
 _GATE_TIMEOUT = 3.0
@@ -99,3 +101,23 @@ def test_ask_stores_gated_facts_before_returning(tmp_path):
     assert started_fired, "extraction task never ran (cancelled before start)"
     # And its fact must be persisted before ask() returned.
     assert _fact_stored(db_path, "s1") == "Alice"
+
+
+def test_ask_inside_running_loop_points_to_process(tmp_path):
+    """ask() from inside a running event loop must raise RuntimeError whose
+    message tells the caller to use `await bot.process(...)` — not asyncio.run's
+    generic "cannot be called from a running event loop"."""
+
+    async def llm(messages):
+        return "ok"
+
+    bot = Projector.minimal(llm_call=llm,
+                            memory_db_path=str(tmp_path / "loop.db"))
+
+    async def inner():
+        with pytest.raises(RuntimeError) as exc:
+            bot.ask("hello", session_id="s1")
+        assert "await bot.process(" in str(exc.value), (
+            "error message does not point to the async API: %r" % str(exc.value))
+
+    asyncio.run(inner())
