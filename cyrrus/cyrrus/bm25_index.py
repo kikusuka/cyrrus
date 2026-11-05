@@ -47,6 +47,20 @@ class SessionFactIndex:
         self.facts = list(facts)
         self.corpus_size = len(self.facts)
 
+        # Integer encoding of the (keyword, doc index) total order used for the
+        # deterministic tie-break, computed once here: rank_of[idx] is the
+        # position of doc `idx` among docs sorted by (keyword, doc index).
+        # Comparing rank_of values is therefore identical to comparing
+        # (keyword, doc index) pairs, but lets rank() tie-break with a plain
+        # integer key instead of building a string sort key per matching doc.
+        order = sorted(
+            range(self.corpus_size),
+            key=lambda i: (self.facts[i][0], i),
+        )
+        self.rank_of = [0] * self.corpus_size
+        for pos, idx in enumerate(order):
+            self.rank_of[idx] = pos
+
         # Per-doc term frequencies are transient (built once to populate the
         # inverted index, then discarded); only the postings, df and the
         # length-normalization term are retained. doc order = facts order,
@@ -109,6 +123,10 @@ class SessionFactIndex:
             return [], []
 
         query_terms = _tokenize(user_input)
+        postings = self.postings
+        doc_norm = self.doc_norm
+        idf = self.idf
+        k1p1 = self.k1 + 1.0
 
         # Term-oriented accumulation over postings into a flat array. Every
         # document receives a score (0.0 when no query term matches), so a
@@ -116,12 +134,12 @@ class SessionFactIndex:
         # non-negative one excludes them — identical to BM25Ranker.score_query
         # for both signs. Query-term order is preserved per document and
         # unseen terms contribute exactly 0.0, so per-doc float sums are
-        # bit-identical to BM25Ranker.score_query.
+        # bit-identical to BM25Ranker.score_query. This is kept as a dense
+        # array rather than a sparse dict: a high-frequency query can touch
+        # essentially the whole corpus, where dict insertion measurably loses
+        # to direct list indexing, and the array is the stable choice for both
+        # few- and many-match queries.
         acc = [0.0] * self.corpus_size
-        postings = self.postings
-        doc_norm = self.doc_norm
-        idf = self.idf
-        k1p1 = self.k1 + 1.0
         for t in query_terms:
             plist = postings.get(t)
             if plist is None:
@@ -133,24 +151,23 @@ class SessionFactIndex:
             (idx, s) for idx, s in enumerate(acc) if s > score_threshold
         ]
 
-        # Deterministic tie-break: (score desc, keyword asc, doc index asc).
-        # The keyword is the stable fact id, so the order is independent of
-        # the row/recency order the index was built from. This mirrors
-        # bm25_rank_facts exactly.
+        # Deterministic tie-break: (score desc, keyword asc, doc index asc),
+        # identical to bm25_rank_facts. rank_of encodes (keyword, doc index) as
+        # a single integer, so the per-document sort key carries no string and
+        # is a 2-tuple of numbers — heap-friendly for a many-match query. The
+        # keyword is unique among a session's active facts, so this total order
+        # is independent of the row/recency order the index was built from.
         #
         # DELIBERATE BEHAVIOR CHANGE: ties used to break by doc index (the
         # last_accessed DESC row order), so touch() could reorder ties and a
         # cached index would diverge from a fresh ranking.
-        facts = self.facts
-
-        def _key(item):
-            idx, score = item
-            return (-score, facts[idx][0], idx)
-
+        rank_of = self.rank_of
         if len(filtered) > limit:
-            top = heapq.nsmallest(limit, filtered, key=_key)
+            top = heapq.nsmallest(
+                limit, filtered, key=lambda it: (-it[1], rank_of[it[0]])
+            )
         else:
-            filtered.sort(key=_key)
+            filtered.sort(key=lambda it: (-it[1], rank_of[it[0]]))
             top = filtered
 
         ranked_out = []
