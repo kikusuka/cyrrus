@@ -1,18 +1,17 @@
 """
-Item 2 (phase 1d): tie-break SPEED without changing behaviour.
+The BM25 tie-break stays the string key: (-score, keyword, doc index).
 
-SessionFactIndex.rank() used to build a STRING sort key (-score, keyword, idx)
-for every matching document. For a high-frequency query that touches the whole
-corpus that is O(corpus) string-key builds. The rewrite pre-computes an integer
-encoding of the (keyword, doc index) total order at index build time
-(``rank_of``) so the per-document key is a numeric 2-tuple and the top-k is
-heap-selected. The resulting ORDER must be identical to the old string key.
+Phase 1d rewrote SessionFactIndex.rank() to key on an integer encoding of the
+(keyword, doc index) order precomputed at index build (``rank_of``). Phase 1e
+re-measured that on the bench 50k fixture and reverted it: end-to-end medians did
+not improve on either interpreter, and the extra 50k-document sort made the cold
+path slower (python 3.9 first_call 6.6-10.0 s vs 3.0-3.7 s without it).
 
-These tests guard the invariant that the integer key is exactly equivalent to
-the string key it replaced (so rankings never change), and pin the rank_of
-encoding itself. ``test_rank_of_exists_and_encodes_keyword_index_order`` fails
-on the pre-change index because that attribute did not exist; the equivalence
-test would fail if the integer mapping were even one position off.
+What is kept here is the part that has to survive any future rewrite: the live
+rank() must select exactly what the explicit string-key reference selects, and
+exactly what bm25_rank_facts selects, on tie-heavy shuffled corpora and for every
+permutation of the same fact set. If the integer encoding comes back, these tests
+are the parity proof, not the ``rank_of`` attribute itself.
 """
 import heapq
 import itertools
@@ -23,7 +22,7 @@ from cyrrus.bm25_index import SessionFactIndex
 
 
 def _string_key_reference(index, query, limit, score_threshold=0.0):
-    """Reproduce the OLD rank(): dense accumulate + STRING key (-score, kw, idx)."""
+    """rank() spelled out with the STRING key: dense accumulate + (-score, kw, idx)."""
     acc = [0.0] * index.corpus_size
     for t in query.split():
         plist = index.postings.get(t)
@@ -51,29 +50,9 @@ def _string_key_reference(index, query, limit, score_threshold=0.0):
     return out
 
 
-def test_rank_of_exists_and_encodes_keyword_index_order():
-    """rank_of[idx] is the position of doc idx among docs sorted by
-    (keyword, doc index). Fails on the pre-change index (no such attribute)."""
-    # Doc order deliberately NOT alphabetical, so the encoding is exercised.
-    facts = [
-        ("zeta", "shared token", 2),
-        ("alpha", "shared token", 2),
-        ("mike", "shared token", 2),
-        ("Alpha", "shared token", 2),  # case differs -> distinct ordering signal
-    ]
-    index = SessionFactIndex(facts)
-    kws = [kw for kw, _v, _t in facts]
-    order = sorted(range(len(facts)), key=lambda i: (kws[i], i))
-    expected = [0] * len(facts)
-    for pos, idx in enumerate(order):
-        expected[idx] = pos
-    assert index.rank_of == expected
-
-
-def test_integer_key_selects_identically_to_string_key_under_heavy_ties():
-    """Across many shuffled tie-heavy corpora, the integer-key rank() must equal
-    the string-key reference AND bm25_rank_facts, bit for bit and position by
-    position."""
+def test_rank_selects_identically_to_string_key_under_heavy_ties():
+    """Across many shuffled tie-heavy corpora, rank() must equal the string-key
+    reference AND bm25_rank_facts, bit for bit and position by position."""
     rng = random.Random(7)
     tie_vals = ["one two", "one two", "one two"]
     for trial in range(60):
@@ -93,11 +72,11 @@ def test_integer_key_selects_identically_to_string_key_under_heavy_ties():
                 got, _drop = index.rank(q, limit=limit, score_threshold=0.0)
                 ref = _string_key_reference(index, q, limit)
                 assert got == ref, (
-                    "int-key != string-key trial=%d q=%r limit=%d\n%r\n%r"
+                    "rank() != string key trial=%d q=%r limit=%d\n%r\n%r"
                     % (trial, q, limit, got, ref))
                 exp = bm25_rank_facts(facts, q, limit=limit, score_threshold=0.0)
                 assert got == exp, (
-                    "int-key != bm25_rank_facts trial=%d q=%r limit=%d\n%r\n%r"
+                    "rank() != bm25_rank_facts trial=%d q=%r limit=%d\n%r\n%r"
                     % (trial, q, limit, got, exp))
 
 
