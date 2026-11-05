@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional
 import asyncio
 import threading
 from .backend import MemoryBackend, validate_session_id, validate_keyword
+from .bm25_index import SessionFactIndex
 
 
 log = logging.getLogger("cyrrus.sqlite_backend")
@@ -98,6 +99,10 @@ class SQLiteBackend(MemoryBackend):
         self._thread_lock = threading.Lock()
         self._conn = None
         self._file_creation_time = None
+        # Per-session inverted index cache for retrieve_ranked():
+        # session_id -> {"index": SessionFactIndex, "data_version": int}
+        self._indexes: Dict[str, Dict[str, Any]] = {}
+        self._index_lock = threading.Lock()
     
     def _get_init_lock(self) -> asyncio.Lock:
         if self._init_lock is None:
@@ -137,6 +142,13 @@ class SQLiteBackend(MemoryBackend):
             self._conn = None
         self._initialized = False
         self._file_creation_time = None
+        with self._index_lock:
+            self._indexes.clear()
+
+    def _invalidate_index(self, session_id: str):
+        """Drop the cached index for a session after its facts change."""
+        with self._index_lock:
+            self._indexes.pop(session_id, None)
     
     def _check_file_recreated(self):
         """Check if the DB file has been recreated since last check."""
@@ -224,6 +236,9 @@ class SQLiteBackend(MemoryBackend):
                     
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON facts(session_id)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_session_current ON facts(session_id, invalid_at) WHERE invalid_at IS NULL")
+                    # Speeds up touch()/upsert() lookups by (session_id, keyword);
+                    # without it each UPDATE scans every row of the session.
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_session_keyword ON facts(session_id, keyword)")
                     
                     conn.commit()
                 finally:
@@ -334,6 +349,7 @@ class SQLiteBackend(MemoryBackend):
                         """, (session_id, overflow))
             
             conn.commit()
+            self._invalidate_index(session_id)
         
         await self._execute_with_retry(_upsert)
     
@@ -360,7 +376,53 @@ class SQLiteBackend(MemoryBackend):
             ).fetchall()
 
         return await self._execute_with_retry(_retrieve)
-    
+
+    async def retrieve_ranked(
+        self,
+        session_id: str,
+        user_input: str,
+        limit: int = 3,
+        score_threshold: float = 0.0,
+    ):
+        """BM25-rank all active facts for a session using a cached
+        per-session inverted index.
+
+        Rankings are identical to bm25_rank_facts over
+        retrieve_current(limit=None). The index is rebuilt only when the
+        session's facts change (writes invalidate it directly; writes from
+        other processes/connections are detected via PRAGMA data_version).
+        """
+        validate_session_id(session_id)
+
+        def _work(conn):
+            # Read data_version BEFORE the SELECT: if a concurrent writer
+            # commits in between, the cached dv is stale and the next call
+            # rebuilds — never the reverse.
+            current_dv = conn.execute("PRAGMA data_version").fetchone()[0]
+            with self._index_lock:
+                entry = self._indexes.get(session_id)
+            if entry is not None and entry["data_version"] == current_dv:
+                index = entry["index"]
+            else:
+                rows = conn.execute(
+                    "SELECT keyword, value, tokens FROM facts "
+                    "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC",
+                    (session_id,),
+                ).fetchall()
+                index = SessionFactIndex(
+                    [(r[0], r[1], r[2]) for r in rows]
+                )
+                with self._index_lock:
+                    self._indexes[session_id] = {
+                        "index": index,
+                        "data_version": current_dv,
+                    }
+            return index.rank(
+                user_input, limit=limit, score_threshold=score_threshold
+            )
+
+        return await self._execute_with_retry(_work)
+
     async def touch(self, session_id: str, keywords: List[str]) -> None:
         """Update last_accessed timestamp for specified facts."""
         validate_session_id(session_id)
@@ -374,7 +436,16 @@ class SQLiteBackend(MemoryBackend):
                 [(now, session_id, kw) for kw in keywords],
             )
             conn.commit()
-        
+            # touch() changes only recency metadata, not index content, so
+            # refresh the cached data_version instead of invalidating (our
+            # own commit would otherwise look like an external write).
+            with self._index_lock:
+                entry = self._indexes.get(session_id)
+                if entry is not None:
+                    entry["data_version"] = conn.execute(
+                        "PRAGMA data_version"
+                    ).fetchone()[0]
+
         await self._execute_with_retry(_touch)
     
     async def delete_session(self, session_id: str) -> int:
@@ -388,6 +459,7 @@ class SQLiteBackend(MemoryBackend):
             )
             rowcount = cursor.rowcount
             conn.commit()
+            self._invalidate_index(session_id)
             return rowcount
         
         return await self._execute_with_retry(_delete)
@@ -425,6 +497,8 @@ class SQLiteBackend(MemoryBackend):
         if self._conn:
             self._conn.close()
             self._conn = None
+        with self._index_lock:
+            self._indexes.clear()
 
     async def forget_fact(self, session_id: str, key: str) -> bool:
         """Physically delete ALL rows for (session_id, key), including superseded versions."""
@@ -438,6 +512,7 @@ class SQLiteBackend(MemoryBackend):
             )
             rowcount = cursor.rowcount
             conn.commit()
+            self._invalidate_index(session_id)
             return rowcount > 0
 
         return await self._execute_with_retry(_forget)
@@ -453,6 +528,7 @@ class SQLiteBackend(MemoryBackend):
             )
             rowcount = cursor.rowcount
             conn.commit()
+            self._invalidate_index(session_id)
             return rowcount
 
         return await self._execute_with_retry(_forget)

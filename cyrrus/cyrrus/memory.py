@@ -120,17 +120,32 @@ class MemoryVault:
             return []
         validate_session_id(session_id)
         await self._ensure_initialized()
-        # Fetch every active fact (limit=None) so relevance ranking below sees
-        # the whole set. A recency-bounded fetch would make older facts buried
-        # under newer rows unreachable regardless of how well they match.
-        rows = await self._backend.retrieve_current(session_id, limit=None)
-        if not rows:
-            return []
 
         if self._embedder is not None and self._np is not None:
+            # Semantic path needs every active fact for the embedding pass.
+            rows = await self._backend.retrieve_current(session_id, limit=None)
+            if not rows:
+                return []
             slides = await self._semantic_retrieve(rows, user_input, limit)
         else:
-            slides = self._keyword_retrieve(rows, user_input, limit)
+            # Keyword path: rank via the backend (per-session inverted index
+            # in SQLiteBackend). Rankings are identical to bm25_rank_facts
+            # over ALL active facts (limit=None), but without re-scanning
+            # and re-ranking the whole corpus on every call.
+            ranked, dropped = await self._backend.retrieve_ranked(
+                session_id, user_input, limit=limit, score_threshold=0.0
+            )
+            self._last_retrieve_dropped_below_threshold = dropped
+            slides = [
+                Slide(
+                    id=f"mem_{kw}",
+                    type="memory",
+                    content=f"Fact: {val}",
+                    tokens=tok,
+                    priority=800,
+                )
+                for _, kw, val, tok in ranked
+            ]
 
         if slides:
             touched = [s.id.replace("mem_", "") for s in slides]

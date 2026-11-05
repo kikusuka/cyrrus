@@ -98,6 +98,42 @@ class MemoryBackend(ABC):
         """
         pass
     
+    async def retrieve_ranked(
+        self,
+        session_id: str,
+        user_input: str,
+        limit: int = 3,
+        score_threshold: float = 0.0,
+    ):
+        """
+        Retrieve the most relevant current facts for a session, ranked by
+        BM25 against user_input over ALL active facts.
+
+        Default implementation: fetch all active rows and rank with
+        bm25_rank_facts. Backends may override with an indexed path that
+        returns identical rankings more cheaply.
+
+        Returns:
+            (ranked, dropped) where ranked is a list of
+            (score, keyword, value, tokens) and dropped is a capped list of
+            {"key": keyword, "reason": "below threshold"} for facts not
+            included in ranked.
+        """
+        from .bm25 import bm25_rank_facts
+
+        rows = await self.retrieve_current(session_id, limit=None)
+        ranked = bm25_rank_facts(
+            rows, user_input, limit=limit, score_threshold=score_threshold
+        )
+        included = {kw for (_s, kw, _v, _t) in ranked}
+        dropped: List[Dict[str, str]] = []
+        for (kw, _v, _t) in rows:
+            if kw not in included:
+                dropped.append({"key": kw, "reason": "below threshold"})
+                if len(dropped) >= 100:
+                    break
+        return ranked, dropped
+
     @abstractmethod
     async def touch(self, session_id: str, keywords: List[str]) -> None:
         """
