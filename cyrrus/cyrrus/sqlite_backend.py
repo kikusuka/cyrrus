@@ -10,6 +10,7 @@ import time
 import logging
 import os
 import sys
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional
 import asyncio
 import threading
@@ -18,6 +19,31 @@ from .bm25_index import SessionFactIndex
 
 
 log = logging.getLogger("cyrrus.sqlite_backend")
+
+# Safe defaults for the per-session index cache. A long-lived process that
+# touches many sessions would otherwise grow self._indexes without bound.
+DEFAULT_MAX_CACHED_SESSIONS = 64
+DEFAULT_MAX_CACHED_DOCS = 200000
+
+
+def _resolve_cap(explicit: Optional[int], env_var: str, default: int) -> Optional[int]:
+    """Resolve a cache cap: explicit ctor arg > env var > built-in default.
+
+    A non-positive resolved value means "unbounded" (returns None).
+    """
+    if explicit is not None:
+        value = explicit
+    else:
+        raw = os.environ.get(env_var)
+        if raw is None or raw == "":
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                log.warning("Ignoring invalid %s=%r; using default %d.", env_var, raw, default)
+                value = default
+    return value if value and value > 0 else None
 
 
 def default_db_path() -> str:
@@ -52,11 +78,23 @@ _backend_registry: dict[str, "SQLiteBackend"] = {}
 _registry_lock = threading.Lock()
 
 
-def get_backend(db_path: str) -> "SQLiteBackend":
-    """Get or create a backend instance for the given DB path (singleton per path)."""
+def get_backend(
+    db_path: str,
+    max_cached_sessions: Optional[int] = None,
+    max_cached_docs: Optional[int] = None,
+) -> "SQLiteBackend":
+    """Get or create a backend instance for the given DB path (singleton per path).
+
+    The cache-cap arguments only take effect when a new backend is created;
+    an existing singleton is returned unchanged.
+    """
     with _registry_lock:
         if db_path not in _backend_registry:
-            _backend_registry[db_path] = SQLiteBackend(db_path)
+            _backend_registry[db_path] = SQLiteBackend(
+                db_path,
+                max_cached_sessions=max_cached_sessions,
+                max_cached_docs=max_cached_docs,
+            )
         return _backend_registry[db_path]
 
 
@@ -89,7 +127,12 @@ class SQLiteBackend(MemoryBackend):
     or if the DB file is recreated (detected by file creation time change).
     """
     
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        max_cached_sessions: Optional[int] = None,
+        max_cached_docs: Optional[int] = None,
+    ):
         if db_path is None:
             db_path = default_db_path()
             log.info("Using default memory database at %s", os.path.abspath(db_path))
@@ -99,9 +142,18 @@ class SQLiteBackend(MemoryBackend):
         self._thread_lock = threading.Lock()
         self._conn = None
         self._file_creation_time = None
-        # Per-session inverted index cache for retrieve_ranked():
+        # LRU caps for the per-session index cache. None means unbounded.
+        self._max_cached_sessions = _resolve_cap(
+            max_cached_sessions, "CYRRUS_INDEX_MAX_SESSIONS", DEFAULT_MAX_CACHED_SESSIONS
+        )
+        self._max_cached_docs = _resolve_cap(
+            max_cached_docs, "CYRRUS_INDEX_MAX_DOCS", DEFAULT_MAX_CACHED_DOCS
+        )
+        # Per-session inverted index cache for retrieve_ranked(), LRU-ordered
+        # (front = least-recently-used, end = most-recently-used):
         # session_id -> {"index": SessionFactIndex, "data_version": int}
-        self._indexes: Dict[str, Dict[str, Any]] = {}
+        self._indexes: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._index_total_docs = 0
         self._index_lock = threading.Lock()
     
     def _get_init_lock(self) -> asyncio.Lock:
@@ -144,11 +196,42 @@ class SQLiteBackend(MemoryBackend):
         self._file_creation_time = None
         with self._index_lock:
             self._indexes.clear()
+            self._index_total_docs = 0
 
     def _invalidate_index(self, session_id: str):
         """Drop the cached index for a session after its facts change."""
         with self._index_lock:
-            self._indexes.pop(session_id, None)
+            entry = self._indexes.pop(session_id, None)
+            if entry is not None:
+                self._index_total_docs -= entry["index"].corpus_size
+
+    def _index_put(self, session_id: str, index: SessionFactIndex, data_version: int):
+        """Insert/refresh a cached index as most-recently-used, then evict LRU
+        entries until both caps are satisfied.
+
+        Must be called with self._index_lock held. The just-inserted session is
+        never evicted (even if it alone exceeds the doc cap) to avoid thrashing
+        on a single oversized session; eviction stops once only it remains.
+        """
+        existing = self._indexes.pop(session_id, None)
+        if existing is not None:
+            self._index_total_docs -= existing["index"].corpus_size
+        self._indexes[session_id] = {"index": index, "data_version": data_version}
+        self._index_total_docs += index.corpus_size
+
+        while len(self._indexes) > 1:
+            over_sessions = (
+                self._max_cached_sessions is not None
+                and len(self._indexes) > self._max_cached_sessions
+            )
+            over_docs = (
+                self._max_cached_docs is not None
+                and self._index_total_docs > self._max_cached_docs
+            )
+            if not (over_sessions or over_docs):
+                break
+            _oldest_sid, oldest = self._indexes.popitem(last=False)
+            self._index_total_docs -= oldest["index"].corpus_size
     
     def _check_file_recreated(self):
         """Check if the DB file has been recreated since last check."""
@@ -399,11 +482,13 @@ class SQLiteBackend(MemoryBackend):
             # commits in between, the cached dv is stale and the next call
             # rebuilds — never the reverse.
             current_dv = conn.execute("PRAGMA data_version").fetchone()[0]
+            index = None
             with self._index_lock:
                 entry = self._indexes.get(session_id)
-            if entry is not None and entry["data_version"] == current_dv:
-                index = entry["index"]
-            else:
+                if entry is not None and entry["data_version"] == current_dv:
+                    self._indexes.move_to_end(session_id)
+                    index = entry["index"]
+            if index is None:
                 rows = conn.execute(
                     "SELECT keyword, value, tokens FROM facts "
                     "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC",
@@ -413,10 +498,7 @@ class SQLiteBackend(MemoryBackend):
                     [(r[0], r[1], r[2]) for r in rows]
                 )
                 with self._index_lock:
-                    self._indexes[session_id] = {
-                        "index": index,
-                        "data_version": current_dv,
-                    }
+                    self._index_put(session_id, index, current_dv)
             return index.rank(
                 user_input, limit=limit, score_threshold=score_threshold
             )
@@ -499,6 +581,7 @@ class SQLiteBackend(MemoryBackend):
             self._conn = None
         with self._index_lock:
             self._indexes.clear()
+            self._index_total_docs = 0
 
     async def forget_fact(self, session_id: str, key: str) -> bool:
         """Physically delete ALL rows for (session_id, key), including superseded versions."""
