@@ -990,8 +990,18 @@ class Projector:
         Sync wrapper for simple scripts that aren't running an async event loop.
         Don't use inside FastAPI, Discord.py, or any async framework — use
         await process() there instead.
+
+        Fact extraction runs as a background task inside process(). asyncio.run
+        closes the loop the moment the awaited coroutine returns, cancelling any
+        task still pending — so without an explicit flush the turn's facts would
+        be lost. Await flush() in the same run to store them before returning.
         """
-        return asyncio.run(self.process(user_input, session_id=session_id))
+        async def _run():
+            response = await self.process(user_input, session_id=session_id)
+            await self.flush()
+            return response
+
+        return asyncio.run(_run())
 
     async def flush(self):
         """
