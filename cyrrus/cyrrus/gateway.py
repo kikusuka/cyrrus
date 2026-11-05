@@ -4,6 +4,7 @@ The gateway intentionally uses only the standard library so it can be used in
 the base installation.  It is a proxy, not a chat UI.
 """
 import asyncio
+import concurrent.futures
 import copy
 import json
 import logging
@@ -21,6 +22,20 @@ from .projector import Projector
 
 log = logging.getLogger(__name__)
 MAX_BODY = 10 * 1024 * 1024
+
+
+class _GatewayServer(ThreadingHTTPServer):
+    """Threaded HTTP server sized for concurrent proxying.
+
+    ``daemon_threads`` lets in-flight handler threads never block interpreter
+    exit; the raised listen backlog (the stdlib default is only 5) keeps the
+    accept queue from refusing legitimate concurrent clients.  Handler threads
+    only read/write sockets and forward — the actual asyncio work is serialised
+    onto the Gateway's single event loop — so a larger backlog cannot reintroduce
+    cross-loop sharing.
+    """
+    daemon_threads = True
+    request_queue_size = 512
 
 
 def _is_loopback(host):
@@ -66,8 +81,137 @@ class Gateway:
         self.traces = deque(maxlen=50)
         self.counters = {"requests": 0, "injected": 0, "skipped": 0, "fail_open": 0}
         self.projector = projector or self._make_projector()
+        # One persistent event loop, owned by this gateway and driven on a
+        # dedicated thread.  Every coroutine the gateway runs (context build,
+        # history summariser, record_turn) is scheduled onto THIS loop so the
+        # Projector's asyncio.Lock primitives never cross event loops.  The old
+        # design ran a fresh asyncio.run() per request thread, which shared
+        # those loop-bound locks across loops and failed open under concurrency.
+        self._loop = None
+        self._loop_thread = None
+        self._bg_futures = set()          # fire-and-forget futures awaiting record_turn
+        self._bg_guard = threading.Lock()  # protects _bg_futures across threads
+        self._closed = False
+        self._start_event_loop()
         self.warmup_thread = None
         self._start_warmup()
+
+    def _start_event_loop(self):
+        """Create the persistent loop and run it on a daemon thread.
+
+        Daemon so the process can never be blocked at interpreter exit by the
+        loop thread; ``close()`` stops and joins it promptly when called.
+        """
+        self._loop = asyncio.new_event_loop()
+
+        def _drive():
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_forever()
+            finally:
+                # run_forever returned because close() asked it to stop.  Cancel
+                # anything still pending, drain the default executor (used by
+                # asyncio.to_thread in the SQLite backend), then close.
+                try:
+                    pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        self._loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:  # noqa: BLE001 - shutdown is best-effort
+                    pass
+                try:
+                    if hasattr(self._loop, "shutdown_default_executor"):
+                        self._loop.run_until_complete(self._loop.shutdown_default_executor())
+                except Exception:  # noqa: BLE001
+                    pass
+                self._loop.close()
+
+        self._loop_thread = threading.Thread(target=_drive, name="cyrrus-event-loop", daemon=True)
+        self._loop_thread.start()
+
+    def _context_timeout(self):
+        try:
+            return float(self.options.get("context_timeout", 60.0))
+        except (TypeError, ValueError):
+            return 60.0
+
+    def _submit(self, coro, timeout=None):
+        """Run ``coro`` on the persistent loop from a request thread and block.
+
+        Raises the coroutine's exception (real model/memory errors) so callers
+        keep their fail-open behaviour, or ``concurrent.futures.TimeoutError``
+        if it exceeds the timeout.  Because the coroutine always runs on the
+        gateway's single loop, it can never raise a cross-loop error.
+        """
+        if self._loop is None or not self._loop.is_running():
+            raise RuntimeError("gateway event loop is not running")
+        if timeout is None:
+            timeout = self._context_timeout()
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return future.result(timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+
+    def _fire(self, coro):
+        """Schedule ``coro`` on the persistent loop without blocking the caller.
+
+        Used for the post-response record_turn; failures are logged, not raised.
+        """
+        if self._loop is None or not self._loop.is_running():
+            close = getattr(coro, "close", None)
+            if close is not None:
+                close()  # don't leak an un-awaited coroutine
+            return None
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        with self._bg_guard:
+            self._bg_futures.add(future)
+
+        def _done(fut):
+            with self._bg_guard:
+                self._bg_futures.discard(fut)
+            try:
+                exc = fut.exception()
+            except concurrent.futures.CancelledError:
+                return
+            if exc is not None:
+                log.warning("Cyrrus background task failed: %s", exc)
+
+        future.add_done_callback(_done)
+        return future
+
+    def close(self, timeout=5.0):
+        """Drain in-flight background work, then stop and join the loop thread.
+
+        Idempotent.  Safe to call even if the loop never started.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        loop = self._loop
+        if loop is None:
+            return
+        # Let queued record_turn futures finish while the loop is still alive.
+        with self._bg_guard:
+            pending = list(self._bg_futures)
+        for future in pending:
+            try:
+                future.result(timeout=timeout)
+            except Exception:  # noqa: BLE001 - shutdown is best-effort
+                pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
+            pass  # loop already stopped/closed
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=timeout)
+        self._loop = None
+        self._loop_thread = None
+
 
     def _start_warmup(self):
         """Optionally warm retrieval indexes for the most-recently-used
@@ -145,7 +289,7 @@ class Gateway:
             self.counters["skipped"] += 1
             return original, session, user_text, {"skipped": True}
         try:
-            context, trace = asyncio.run(self.projector.build_context(user_text, session))
+            context, trace = self._submit(self.projector.build_context(user_text, session))
             result = copy.deepcopy(payload)
             if not has_tools:
                 result["messages"] = self._inject(messages, context)
@@ -210,9 +354,13 @@ class Gateway:
             return None
         try:
             from .projector import _run_history_summarizer
-            summary = asyncio.run(_run_history_summarizer(
-                summarizer, dropped, getattr(self.projector, "summarizer_timeout", 10.0)
-            ))
+            summarizer_timeout = getattr(self.projector, "summarizer_timeout", 10.0)
+            # Schedule on the shared loop; give headroom past the summariser's
+            # own internal timeout so that one fires first and reports cleanly.
+            summary = self._submit(
+                _run_history_summarizer(summarizer, dropped, summarizer_timeout),
+                timeout=summarizer_timeout + 5.0,
+            )
         except Exception as exc:
             log.warning("Cyrrus manage-mode summarizer failed: %s", exc)
             return None
@@ -329,7 +477,7 @@ def make_handler(gateway):
                     else: assistant = json.loads(decoded)["choices"][0]["message"].get("content", "")
                 except Exception: pass
                 if not payload.get("tools") and not any(m.get("role") == "tool" for m in payload.get("messages", [])):
-                    threading.Thread(target=lambda: asyncio.run(gateway.projector.record_turn(session, user_text, assistant)), daemon=True).start()
+                    gateway._fire(gateway.projector.record_turn(session, user_text, assistant))
                 gateway.add_trace(session, trace, started)
             except (URLError, ValueError) as exc:
                 self._json(502, {"error": {"message": str(exc), "type": "upstream_error"}})
@@ -344,9 +492,11 @@ def create_server(config, projector=None, host=None, port=None, log_prompts=Fals
     gateway = Gateway(config, projector=projector, log_prompts=log_prompts)
     while True:
         try:
-            server = ThreadingHTTPServer((host, port), make_handler(gateway)); server.gateway = gateway; return server
+            server = _GatewayServer((host, port), make_handler(gateway)); server.gateway = gateway; return server
         except OSError:
-            if port == 0: raise
+            if port == 0:
+                gateway.close()
+                raise
             port += 1
 
 
@@ -355,4 +505,6 @@ def serve(config, host=None, port=None, log_prompts=False):
     print("Cyrrus gateway: http://%s:%s/v1  model=%s  mode=%s" % (server.server_address[0], server.server_address[1], config.get("provider", {}).get("model") or "(unset)", config["gateway"]["mode"]))
     try: server.serve_forever()
     except KeyboardInterrupt: pass
-    finally: server.server_close()
+    finally:
+        server.server_close()
+        server.gateway.close()

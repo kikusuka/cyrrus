@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +28,17 @@ def _projector(tmp_path, **kwargs):
 
 def _config():
     return validate_config({"provider": {"base_url": "http://127.0.0.1:9/v1", "model": "test-model"}})
+
+
+class _UpstreamServer(ThreadingHTTPServer):
+    """Fake upstream sized to absorb 200 simultaneous forwarded requests.
+
+    The stdlib default listen backlog (5) makes a plain ThreadingHTTPServer
+    refuse the tail of a 200-way burst; that is a harness limit, not the thing
+    under test, so raise it (and keep handler threads daemon) here.
+    """
+    daemon_threads = True
+    request_queue_size = 512
 
 
 def _fake_upstream():
@@ -58,7 +70,7 @@ def _fake_upstream():
                 self.wfile.write(b"data: [DONE]\n\n")
             else:
                 self.wfile.write(b'{"choices":[{"message":{"content":"ok"}}]}')
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = _UpstreamServer(("127.0.0.1", 0), Handler)
     server.bodies, server.error = [], False
     server.stream_gate = None
     server.first_sent = threading.Event()
@@ -316,4 +328,205 @@ def test_request_body_limit(tmp_path, monkeypatch):
                 conn.close()
     finally:
         server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 — gateway event-loop bug: shared asyncio primitives across per-request
+# asyncio.run() loops must not cause cross-loop fail-opens under concurrency.
+# --------------------------------------------------------------------------- #
+def _seeded_projector(tmp_path, session, keyword, value):
+    """Projector with one memory fact already stored for ``session``."""
+    projector = _projector(tmp_path)
+    asyncio.run(projector.memory.upsert(session, keyword, value, len(value.split())))
+    return projector
+
+
+def _concurrent_requests(base, n, session, text):
+    """Fire ``n`` simultaneous POSTs (released together by a barrier).
+
+    Returns (errors, codes). Each worker opens its own connection so the
+    ThreadingHTTPServer dispatches one OS thread per request -- exactly the
+    path that used to run a fresh asyncio loop per request.
+
+    The cross-loop sharing this guards against is a genuine data race: with the
+    default 5 ms GIL switch interval the tiny lock-held windows almost never
+    overlap, so it stays latent.  ``sys.setswitchinterval`` shrinks that window
+    so the race is exercised every run instead of occasionally; it is restored
+    afterwards.  This does not change what is asserted, only how reliably the
+    (already-present) concurrency bug is triggered.
+    """
+    errors, codes = [], []
+    guard = threading.Lock()
+    barrier = threading.Barrier(n, timeout=120)
+    host, port = base.split("//", 1)[1].split(":", 1)
+    port = int(port)
+
+    def worker():
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                errors.append("barrier %r" % exc)
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=30)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": text}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                codes.append(response.status)
+        except HTTPError as exc:
+            with guard:
+                errors.append("http %s %s" % (exc.code, exc.reason))
+        except Exception as exc:  # noqa: BLE001 - the test asserts on this bucket
+            with guard:
+                errors.append("req %r" % exc)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-4)
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    for thread in threads:
+        if thread.is_alive():
+            with guard:
+                errors.append("worker thread hung (never finished)")
+    return errors, codes
+
+
+def test_gateway_concurrent_requests_no_cross_loop_fail_open(tmp_path):
+    """200 simultaneous requests must all succeed with context injected.
+
+    Before the fix each request ran its own ``asyncio.run()`` loop while the
+    Projector shared ``asyncio.Lock`` objects across them; under concurrency
+    those locks raised "bound to a different event loop" / "attached to a
+    different loop", which the gateway swallowed as fail-open (returning the
+    request WITHOUT any injected context). We assert: zero request errors, zero
+    fail-opens, and every forwarded body carries the injected system message
+    with the routed slide and the stored memory fact.
+    """
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _seeded_projector(tmp_path, "load", "weather_forecast", "sunny in Porto")
+    server = create_server(config, projector=projector, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        # Warm-up: one sequential request initialises the persistent loop, the
+        # SQLite connection and the first per-session index outside the burst, so
+        # cold-start cost cannot masquerade as a concurrency failure.
+        warm = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+        warm.request(
+            "POST", "/v1/chat/completions",
+            body=json.dumps({"model": "x", "user": "load",
+                             "messages": [{"role": "user", "content": "weather please"}]}),
+            headers={"Content-Type": "application/json"},
+        )
+        warm.getresponse().read(); warm.close()
+        del upstream.bodies[:]
+        errors, codes = _concurrent_requests(base, 200, "load", "weather please")
+        gateway = server.gateway
+
+        assert not errors, "request errors: %s" % errors[:12]
+        assert len(codes) == 200, "expected 200 responses, got %d" % len(codes)
+        assert all(code == 200 for code in codes), "non-200 responses: %s" % set(codes)
+        assert gateway.counters["fail_open"] == 0, "fail-opens: %d" % gateway.counters["fail_open"]
+        assert len(upstream.bodies) == 200, "only %d bodies reached upstream" % len(upstream.bodies)
+        for body in upstream.bodies:
+            system = body["messages"][0]
+            assert system["role"] == "system", "no system message injected: %r" % body["messages"][:1]
+            assert "Weather slide." in system["content"], "slide not injected: %r" % system["content"][:200]
+            assert "sunny in Porto" in system["content"], "memory not injected: %r" % system["content"][:200]
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+_SHUTDOWN_CHILD = '''
+import json, os, tempfile, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
+from cyrrus.config import validate_config
+from cyrrus.gateway import create_server
+from cyrrus.projector import Projector
+
+
+class Up(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers["Content-Length"])
+        self.rfile.read(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b\'{"choices":[{"message":{"content":"ok"}}]}\')
+
+
+up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+threading.Thread(target=up.serve_forever, daemon=True).start()
+
+
+async def _llm(m):
+    return "x"
+
+
+proj = Projector({"core_lamp": {"content": "Be concise."}}, _llm,
+                 memory_db_path=os.path.join(tempfile.mkdtemp(), "m.sqlite"))
+cfg = validate_config({"provider": {"base_url": "http://127.0.0.1:%s/v1" % up.server_address[1], "model": "m"}})
+server = create_server(cfg, projector=proj, port=0)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = "http://127.0.0.1:%s" % server.server_address[1]
+
+for _ in range(25):
+    urlopen(Request(base + "/v1/chat/completions",
+                    data=json.dumps({"model": "m", "user": "s",
+                                     "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                    headers={"Content-Type": "application/json"})).read()
+
+server.shutdown()
+server.server_close()
+close = getattr(server.gateway, "close", None)
+if close:
+    close()
+up.shutdown()
+up.server_close()
+print("CHILD-DONE")
+'''
+
+
+def test_gateway_clean_shutdown_process_exits(tmp_path):
+    """A gateway process must exit with no hanging threads after shutdown.
+
+    Runs a full create_server -> serve -> request -> shutdown cycle in a child
+    interpreter. If the persistent event loop (or any loop-owned thread) is left
+    non-daemon and un-stopped, the child never exits and this times out.
+    """
+    import subprocess
+    import sys
+    script = tmp_path / "shutdown_child.py"
+    script.write_text(_SHUTDOWN_CHILD, encoding="utf-8")
+    try:
+        proc = subprocess.run([sys.executable, str(script)], capture_output=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        pytest.fail("gateway child did not exit within 90s (hanging thread)")
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert b"CHILD-DONE" in proc.stdout, proc.stdout.decode("utf-8", "replace")
 
