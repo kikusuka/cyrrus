@@ -25,6 +25,9 @@ DEFAULTS = {
         "retrieval": "keyword",  # "keyword" or "hybrid"
         "max_facts_per_session": 50,
         "embedding_min_score": 0.7,
+        # Number of most-recently-used sessions whose retrieval index the
+        # gateway warms in a background thread at startup. 0 disables warm-up.
+        "warmup_sessions": 0,
     },
     "context": {
         "renderer": "default",  # "default" or "compact"
@@ -178,6 +181,9 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         if "embedding_min_score" in memory and memory["embedding_min_score"] is not None:
             if not isinstance(memory["embedding_min_score"], (int, float)) or not (0 <= memory["embedding_min_score"] <= 1):
                 raise ValueError("memory.embedding_min_score must be a number between 0 and 1")
+        if "warmup_sessions" in memory and memory["warmup_sessions"] is not None:
+            if not isinstance(memory["warmup_sessions"], int) or memory["warmup_sessions"] < 0:
+                raise ValueError("memory.warmup_sessions must be a non-negative integer")
 
     # Validate context section
     if "context" in normalized:

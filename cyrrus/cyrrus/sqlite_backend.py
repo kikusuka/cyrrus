@@ -460,6 +460,30 @@ class SQLiteBackend(MemoryBackend):
 
         return await self._execute_with_retry(_retrieve)
 
+    def _get_or_build_index(self, conn, session_id: str) -> SessionFactIndex:
+        """Return the cached index for a session, rebuilding it when absent or
+        stale. Shared by retrieve_ranked() and the background warm-up.
+
+        Reads PRAGMA data_version BEFORE the SELECT so a concurrent external
+        commit forces a rebuild on the next call (never the reverse). Must be
+        called while holding the connection (inside _execute_with_retry).
+        """
+        current_dv = conn.execute("PRAGMA data_version").fetchone()[0]
+        with self._index_lock:
+            entry = self._indexes.get(session_id)
+            if entry is not None and entry["data_version"] == current_dv:
+                self._indexes.move_to_end(session_id)
+                return entry["index"]
+        rows = conn.execute(
+            "SELECT keyword, value, tokens FROM facts "
+            "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC",
+            (session_id,),
+        ).fetchall()
+        index = SessionFactIndex([(r[0], r[1], r[2]) for r in rows])
+        with self._index_lock:
+            self._index_put(session_id, index, current_dv)
+        return index
+
     async def retrieve_ranked(
         self,
         session_id: str,
@@ -478,32 +502,50 @@ class SQLiteBackend(MemoryBackend):
         validate_session_id(session_id)
 
         def _work(conn):
-            # Read data_version BEFORE the SELECT: if a concurrent writer
-            # commits in between, the cached dv is stale and the next call
-            # rebuilds — never the reverse.
-            current_dv = conn.execute("PRAGMA data_version").fetchone()[0]
-            index = None
-            with self._index_lock:
-                entry = self._indexes.get(session_id)
-                if entry is not None and entry["data_version"] == current_dv:
-                    self._indexes.move_to_end(session_id)
-                    index = entry["index"]
-            if index is None:
-                rows = conn.execute(
-                    "SELECT keyword, value, tokens FROM facts "
-                    "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC",
-                    (session_id,),
-                ).fetchall()
-                index = SessionFactIndex(
-                    [(r[0], r[1], r[2]) for r in rows]
-                )
-                with self._index_lock:
-                    self._index_put(session_id, index, current_dv)
+            index = self._get_or_build_index(conn, session_id)
             return index.rank(
                 user_input, limit=limit, score_threshold=score_threshold
             )
 
         return await self._execute_with_retry(_work)
+
+    def warm_recent_sync(self, limit: int = 8) -> int:
+        """Synchronously pre-build indexes for the most-recently-used sessions.
+
+        Designed to run on a plain background thread at gateway startup. It
+        holds the same connection lock as request-path operations (so it
+        serializes with them) and touches no asyncio primitives, so it is safe
+        alongside the gateway's per-request ``asyncio.run`` loops. Best-effort:
+        returns the number of sessions warmed and never raises. If the schema
+        does not exist yet, it does nothing and the first request initializes
+        the DB as usual.
+        """
+        if limit <= 0:
+            return 0
+        try:
+            with self._thread_lock:
+                conn = self._get_connection()
+                try:
+                    rows = conn.execute(
+                        "SELECT session_id FROM facts WHERE invalid_at IS NULL "
+                        "GROUP BY session_id ORDER BY MAX(last_accessed) DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return 0
+                warmed = 0
+                for row in rows:
+                    sid = row[0]
+                    try:
+                        validate_session_id(sid)
+                        self._get_or_build_index(conn, sid)
+                        warmed += 1
+                    except Exception as exc:  # pragma: no cover - defensive
+                        log.debug("warm_index(%s) skipped: %s", sid, exc)
+                return warmed
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("warm_recent_sync skipped: %s", exc)
+            return 0
 
     async def touch(self, session_id: str, keywords: List[str]) -> None:
         """Update last_accessed timestamp for specified facts."""

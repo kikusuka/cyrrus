@@ -47,24 +47,24 @@ class SessionFactIndex:
         self.facts = list(facts)
         self.corpus_size = len(self.facts)
 
-        # Per-doc term frequencies and lengths (doc order = facts order,
+        # Per-doc term frequencies are transient (built once to populate the
+        # inverted index, then discarded); only the postings, df and the
+        # length-normalization term are retained. doc order = facts order,
         # which is retrieve_current's ORDER BY last_accessed DESC — the same
-        # order bm25_rank_facts would see, so tie-breaking matches).
-        self.doc_freqs: List[Dict[str, int]] = []
-        self.doc_lengths: List[int] = []
+        # order bm25_rank_facts would see, so tie-breaking matches.
         # term -> [(doc_idx, freq)] with doc_idx ascending
         self.postings: Dict[str, List[Tuple[int, int]]] = {}
         self.df: Dict[str, int] = {}
+        doc_lengths: List[int] = []
 
         for idx, (kw, val, _tok) in enumerate(self.facts):
             kw_expanded = _expand_keyword_with_aliases(kw)
             doc = f"{kw_expanded} : {val}" if val else kw_expanded
             toks = _tokenize(doc)
+            doc_lengths.append(len(toks))
             freqs: Dict[str, int] = {}
             for t in toks:
                 freqs[t] = freqs.get(t, 0) + 1
-            self.doc_freqs.append(freqs)
-            self.doc_lengths.append(len(toks))
             for t, f in freqs.items():
                 self.df[t] = self.df.get(t, 0) + 1
                 self.postings.setdefault(t, []).append((idx, f))
@@ -76,7 +76,7 @@ class SessionFactIndex:
             self.doc_norm: List[float] = []
             return
 
-        self.avgdl = sum(self.doc_lengths) / self.corpus_size
+        self.avgdl = sum(doc_lengths) / self.corpus_size
         self.idf = {
             term: math.log((self.corpus_size - freq + 0.5) / (freq + 0.5) + 1.0)
             for term, freq in self.df.items()
@@ -88,19 +88,8 @@ class SessionFactIndex:
         # Identical expression to BM25Ranker._score_term's denominator part.
         self.doc_norm = [
             self.k1 * (1.0 - self.b + self.b * (dl / self.avgdl if self.avgdl > 0 else 0.0))
-            for dl in self.doc_lengths
+            for dl in doc_lengths
         ]
-
-    def _score_term(self, doc_idx: int, term: str) -> float:
-        """Mirror of BM25Ranker._score_term (same float operation order)."""
-        f = self.doc_freqs[doc_idx].get(term, 0)
-        if f == 0:
-            return 0.0
-        idf = self.idf.get(term)
-        if idf is None:
-            idf = self.epsilon * self.avg_idf
-        denominator = f + self.doc_norm[doc_idx]
-        return idf * f * (self.k1 + 1.0) / denominator
 
     def rank(
         self,
@@ -121,35 +110,28 @@ class SessionFactIndex:
 
         query_terms = _tokenize(user_input)
 
-        if score_threshold < 0.0:
-            # Negative thresholds admit zero-score docs: score everything,
-            # exactly like BM25Ranker.score_query.
-            scores: Dict[int, float] = {}
-            for idx in range(self.corpus_size):
-                s = 0.0
-                for t in query_terms:
-                    s += self._score_term(idx, t)
-                scores[idx] = s
-            filtered = [(idx, s) for idx, s in scores.items() if s > score_threshold]
-        else:
-            # Term-oriented accumulation over postings into a flat array.
-            # Query-term order is preserved per document and unseen terms
-            # contribute exactly 0.0 in score_query, so per-doc float sums
-            # are bit-identical to BM25Ranker.score_query.
-            acc = [0.0] * self.corpus_size
-            postings = self.postings
-            doc_norm = self.doc_norm
-            k1p1 = self.k1 + 1.0
-            for t in query_terms:
-                plist = postings.get(t)
-                if plist is None:
-                    continue
-                idf = self.idf[t]
-                for idx, f in plist:
-                    acc[idx] += idf * f * k1p1 / (f + doc_norm[idx])
-            filtered = [
-                (idx, s) for idx, s in enumerate(acc) if s > score_threshold
-            ]
+        # Term-oriented accumulation over postings into a flat array. Every
+        # document receives a score (0.0 when no query term matches), so a
+        # negative score_threshold naturally admits zero-score docs while a
+        # non-negative one excludes them — identical to BM25Ranker.score_query
+        # for both signs. Query-term order is preserved per document and
+        # unseen terms contribute exactly 0.0, so per-doc float sums are
+        # bit-identical to BM25Ranker.score_query.
+        acc = [0.0] * self.corpus_size
+        postings = self.postings
+        doc_norm = self.doc_norm
+        idf = self.idf
+        k1p1 = self.k1 + 1.0
+        for t in query_terms:
+            plist = postings.get(t)
+            if plist is None:
+                continue
+            t_idf = idf[t]
+            for idx, f in plist:
+                acc[idx] += t_idf * f * k1p1 / (f + doc_norm[idx])
+        filtered = [
+            (idx, s) for idx, s in enumerate(acc) if s > score_threshold
+        ]
 
         # Deterministic tie-break: (score desc, keyword asc, doc index asc).
         # The keyword is the stable fact id, so the order is independent of

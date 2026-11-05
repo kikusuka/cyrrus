@@ -66,6 +66,39 @@ class Gateway:
         self.traces = deque(maxlen=50)
         self.counters = {"requests": 0, "injected": 0, "skipped": 0, "fail_open": 0}
         self.projector = projector or self._make_projector()
+        self.warmup_thread = None
+        self._start_warmup()
+
+    def _start_warmup(self):
+        """Optionally warm retrieval indexes for the most-recently-used
+        sessions on a background daemon thread.
+
+        Gated by ``memory.warmup_sessions`` (0 = disabled, the default). Never
+        blocks startup or request handling: the thread is a daemon, does its
+        own bounded work under the backend's connection lock, and swallows any
+        error. Silently skipped for backends without warm-up support.
+        """
+        try:
+            count = int(self.config.get("memory", {}).get("warmup_sessions", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            return
+        backend = getattr(getattr(self.projector, "memory", None), "_backend", None)
+        if backend is None or not hasattr(backend, "warm_recent_sync"):
+            return
+
+        def _run():
+            try:
+                warmed = backend.warm_recent_sync(count)
+                log.info("Cyrrus warm-up pre-built %d session index(es).", warmed)
+            except Exception as exc:
+                log.debug("gateway warm-up skipped: %s", exc)
+
+        self.warmup_thread = threading.Thread(
+            target=_run, name="cyrrus-warmup", daemon=True
+        )
+        self.warmup_thread.start()
 
     def _make_projector(self):
         import pathlib
