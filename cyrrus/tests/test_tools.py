@@ -242,6 +242,26 @@ class TestMemoryFunctions:
         assert result["results"][0]["value"] == "Alice"
         assert "score" in result["results"][0]
 
+    def test_memory_search_finds_fact_beyond_recent_100(self, tmp_path):
+        """memory_search must rank ALL active facts (same retrieval path as
+        MemoryVault.retrieve), not just the most-recently-accessed 100."""
+        db_path = str(tmp_path / "test_mem.db")
+        vault = MemoryVault(db_path=db_path)
+
+        async def _seed():
+            await vault.upsert("s1", "user_pet", "a gecko named Ziggy", 4)
+            for i in range(150):
+                await vault.upsert("s1", "note_%03d" % i,
+                                   "unrelated filler text %d" % i, 4)
+
+        asyncio.run(_seed())
+        result = memory_search(session="s1", query="what pet gecko",
+                               limit=5, db_path=db_path)
+        assert result["success"] is True
+        keys = [r["key"] for r in result["results"]]
+        assert "user_pet" in keys, (
+            "buried fact not found; memory_search is capped to recent rows: %r" % keys)
+
     def test_memory_forget(self, tmp_path):
         """Test memory_forget deletes a fact."""
         db_path = str(tmp_path / "test_mem.db")

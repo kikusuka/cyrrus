@@ -608,11 +608,14 @@ def memory_search(
 
         async def _search():
             await vault._ensure_initialized()
-            rows = await vault._backend.retrieve_current(session, limit=100)
-            if not rows or not query.strip():
+            if not query.strip():
                 return []
 
             if vault._embedder is not None and vault._np is not None:
+                # Hybrid path needs every active fact for the embedding pass.
+                rows = await vault._backend.retrieve_current(session, limit=None)
+                if not rows:
+                    return []
                 keyword_ranked = bm25_rank_facts(rows, query, limit=limit, score_threshold=0.0)
                 results = []
                 seen_keys = set()
@@ -643,7 +646,11 @@ def memory_search(
                                 break
                 return results[:limit]
             else:
-                ranked = bm25_rank_facts(rows, query, limit=limit, score_threshold=0.0)
+                # Same retrieval path as MemoryVault.retrieve's keyword mode:
+                # BM25 over ALL active facts (backend-indexed), no recency cap.
+                ranked, _dropped = await vault._backend.retrieve_ranked(
+                    session, query, limit=limit, score_threshold=0.0
+                )
                 return [
                     {"key": kw, "value": val, "score": float(score)}
                     for score, kw, val, tok in ranked
