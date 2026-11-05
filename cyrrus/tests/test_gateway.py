@@ -1115,3 +1115,100 @@ def test_gateway_forced_drain_timeout_accounts_every_served_turn(tmp_path, caplo
         upstream.shutdown(); upstream.server_close()
 
 
+# --------------------------------------------------------------------------- #
+# Item 2 — the request/injected/fail_open counters were plain dict increments
+# ("counters[k] += 1"), which is a read-modify-write and therefore loses updates
+# when handler threads interleave: 200 concurrent requests could report fewer.
+# --------------------------------------------------------------------------- #
+class _FailingContextProjector(Projector):
+    """Every context build raises, so all traffic takes the fail-open branch."""
+
+    async def build_context(self, user_text, session_id="default"):
+        raise RuntimeError("context exploded")
+
+
+@pytest.mark.parametrize("outcome", ["injected", "fail_open"])
+def test_gateway_concurrent_counters_are_exact(tmp_path, outcome):
+    """200 simultaneous requests must leave the counters at exactly 200.
+
+    ``outcome`` picks which counter the burst drives: normal traffic increments
+    ``injected``, a projector that always raises increments ``fail_open`` instead -
+    either way one request must account for exactly one increment, and the other
+    one must stay at zero. Counting is what an operator reads to know how much the
+    gateway actually did, so a lost increment is a wrong answer, not a rounding error.
+    """
+    n = 200
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, projector_cls=_FailingContextProjector) \
+        if outcome == "fail_open" else _seeded_projector(tmp_path, "counter", "x", "y")
+    server = create_server(config, projector=projector, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        # Warm-up first: the first request of a fresh gateway pays for the loop thread,
+        # the SQLite schema and the session's first index, and 199 queued clients can
+        # time out behind that without the counters being wrong. The burst is measured
+        # as a delta from here so the warm-up's own increments cannot hide a loss.
+        _request(base, {"model": "x", "user": "counter",
+                        "messages": [{"role": "user", "content": "warm up"}]}).read()
+        before = server.gateway.counter_snapshot()
+        errors, codes = _concurrent_requests(base, n, "counter", "hello there")
+        gateway = server.gateway
+        counts = {name: value - before[name]
+                  for name, value in gateway.counter_snapshot().items()}
+        print("COUNTERS outcome=%s errors=%d codes=%d counts=%s"
+              % (outcome, len(errors), len(codes), sorted(counts.items())))
+        assert not errors, errors[:8]
+        assert len(codes) == n and all(c == 200 for c in codes), codes[:8]
+        assert counts["requests"] == n, "requests lost increments: %s" % counts
+        assert counts[outcome] == n, "%s lost increments: %s" % (outcome, counts)
+        other = "fail_open" if outcome == "injected" else "injected"
+        assert counts[other] == 0, "%s incremented for %s traffic: %s" % (other, outcome, counts)
+        assert counts["skipped"] == 0, counts
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+def test_gateway_counter_bump_never_loses_an_increment(tmp_path):
+    """The counting primitive itself: 16 threads x 1000 bumps must land as 16000.
+
+    A 200-request HTTP burst puts one increment per request around milliseconds of
+    real work, so it can miss the read-modify-write window entirely; the primitive has
+    to be hammered directly to show the increments are atomic. Two names are driven at
+    once because the dict is the shared object here, not only the integers.
+    """
+    gateway = Gateway(_config(), projector=_projector(tmp_path))
+    threads, per = 16, 1000
+    names = ["requests", "injected"]
+    barrier = threading.Barrier(threads * len(names), timeout=60)
+
+    def hammer(name):
+        barrier.wait()
+        for _ in range(per):
+            gateway.bump(name)
+
+    pool = [threading.Thread(target=hammer, args=(names[i % len(names)],))
+            for i in range(threads * len(names))]
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for thread in pool:
+            thread.start()
+        for thread in pool:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    counts = gateway.counter_snapshot()
+    print("BUMP-CONTENTION counts=%s" % sorted(counts.items()))
+    assert not any(thread.is_alive() for thread in pool), "counter thread hung"
+    for name in names:
+        assert counts[name] == threads * per, "lost increments: %s" % counts
+        assert gateway.counters[name] == threads * per, name
+    assert gateway.counter("fail_open") == 0, counts
+    gateway.close()
+
+

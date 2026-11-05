@@ -79,8 +79,11 @@ class Gateway:
         self.dotenv = load_dotenv()
         self.lock = threading.Lock()
         self.traces = deque(maxlen=50)
-        # Every counter key is created up front: a key added lazily would change
-        # the dict size while a concurrent /cyrrus/status request is iterating it.
+        # Every counter key is created up front and every change goes through
+        # bump()/counter() under this lock: ``counters[k] += 1`` is a
+        # read-modify-write, so concurrent handler threads could lose increments, and
+        # a lazily added key would resize the dict while /cyrrus/status iterates it.
+        self._counters_lock = threading.Lock()
         self.counters = {"requests": 0, "injected": 0, "skipped": 0, "fail_open": 0,
                          "record_refused": 0}
         self.projector = projector or self._make_projector()
@@ -215,6 +218,23 @@ class Gateway:
             self._turn_windows -= 1
             self._bg_cv.notify_all()
 
+    def bump(self, name, amount=1):
+        """Add ``amount`` to a counter and return the new value (atomic)."""
+        with self._counters_lock:
+            value = self.counters.get(name, 0) + amount
+            self.counters[name] = value
+            return value
+
+    def counter(self, name):
+        """Read one counter."""
+        with self._counters_lock:
+            return self.counters.get(name, 0)
+
+    def counter_snapshot(self):
+        """Every counter at one instant, for /cyrrus/status."""
+        with self._counters_lock:
+            return dict(self.counters)
+
     def pending_turns(self):
         """Turns the shutdown drain is still waiting for: queued plus in flight."""
         with self._bg_cv:
@@ -224,7 +244,7 @@ class Gateway:
         """(queued, in flight, refused) — the parts of a shutdown loss."""
         with self._bg_cv:
             return (len(self._bg_futures), self._turn_windows,
-                    self.counters.get("record_refused", 0))
+                    self.counter("record_refused"))
 
     def abandoned_sessions(self):
         """Sessions whose queued record_turn the drain is about to give up on.
@@ -262,8 +282,7 @@ class Gateway:
             close_coro = getattr(coro, "close", None)
             if close_coro is not None:
                 close_coro()  # don't leak an un-awaited coroutine
-            with self._bg_cv:
-                self.counters["record_refused"] = self.counters.get("record_refused", 0) + 1
+            self.bump("record_refused")
             log.warning(
                 "Cyrrus background work refused: the gateway event loop is shutting down; "
                 "this turn will not be recorded.%s" % (" session=%s" % session if session else "")
@@ -339,7 +358,7 @@ class Gateway:
                     log.warning(
                         "Cyrrus shutdown drain timed out after %ss: %s",
                         budget, _loss_summary(len(self._bg_futures), self._turn_windows,
-                                              self.counters.get("record_refused", 0),
+                                              self.counter("record_refused"),
                                               self.abandoned_sessions()))
                     self._stopping = True
                     break
@@ -429,7 +448,7 @@ class Gateway:
         user_text = _last_user(messages)
         has_tools = bool(payload.get("tools")) or any(m.get("role") == "tool" for m in messages)
         if headers.get("X-Cyrrus-Skip") == "1":
-            self.counters["skipped"] += 1
+            self.bump("skipped")
             return original, session, user_text, {"skipped": True}
         try:
             context, trace = self._submit(self.projector.build_context(user_text, session))
@@ -438,13 +457,13 @@ class Gateway:
                 result["messages"] = self._inject(messages, context)
                 if self.options.get("mode") == "manage":
                     result["messages"] = self._compact(result["messages"])
-            self.counters["injected"] += 1
+            self.bump("injected")
             return result, session, user_text, trace
         except Exception as exc:
             if not self.options.get("fail_open", True):
                 raise
             log.warning("Cyrrus context failed open: %s", exc)
-            self.counters["fail_open"] += 1
+            self.bump("fail_open")
             return original, session, user_text, {"fail_open": True, "error": type(exc).__name__}
 
     def _inject(self, messages, context):
@@ -557,7 +576,7 @@ def make_handler(gateway):
             if self.path == "/health":
                 return self._json(200, {"status": "ok"})
             if self.path == "/cyrrus/status":
-                return self._json(200, {"gateway": {k: v for k, v in gateway.options.items() if k != "api_key_env"}, "counters": gateway.counters})
+                return self._json(200, {"gateway": {k: v for k, v in gateway.options.items() if k != "api_key_env"}, "counters": gateway.counter_snapshot()})
             if self.path == "/cyrrus/last":
                 return self._json(200, {"requests": list(gateway.traces)})
             if self.path == "/v1/models":
@@ -596,7 +615,7 @@ def make_handler(gateway):
             # the turn is what the old fire-and-forget did.
             if records_turn and not gateway._reserve_turn():
                 return self._json(503, {"error": {"message": "gateway is shutting down; this turn was not recorded", "type": "shutdown"}})
-            started = time.time(); gateway.counters["requests"] += 1
+            started = time.time(); gateway.bump("requests")
             try:
                 outgoing, session, user_text, trace = gateway.prepare(payload, self.headers)
                 forced = gateway.options.get("force_model")
