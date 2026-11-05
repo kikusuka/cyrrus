@@ -79,7 +79,10 @@ class Gateway:
         self.dotenv = load_dotenv()
         self.lock = threading.Lock()
         self.traces = deque(maxlen=50)
-        self.counters = {"requests": 0, "injected": 0, "skipped": 0, "fail_open": 0}
+        # Every counter key is created up front: a key added lazily would change
+        # the dict size while a concurrent /cyrrus/status request is iterating it.
+        self.counters = {"requests": 0, "injected": 0, "skipped": 0, "fail_open": 0,
+                         "record_refused": 0}
         self.projector = projector or self._make_projector()
         # One persistent event loop, owned by this gateway and driven on a
         # dedicated thread.  Every coroutine the gateway runs (context build,
@@ -90,8 +93,14 @@ class Gateway:
         self._loop = None
         self._loop_thread = None
         self._bg_futures = set()          # fire-and-forget futures awaiting record_turn
-        self._bg_guard = threading.Lock()  # protects _bg_futures across threads
-        self._closed = False
+        self._turn_windows = 0            # handlers that owe a record_turn (see _reserve_turn)
+        # One condition guards all shutdown state: _bg_futures, _turn_windows,
+        # _closed and _stopping.  Every decision about "can this turn still be
+        # scheduled?" and "may the loop stop?" is taken under it, which is what
+        # makes the two unable to interleave and lose work.
+        self._bg_cv = threading.Condition()
+        self._closed = False              # close() has begun: no more fire-and-forget
+        self._stopping = False            # the loop is about to stop: no work accepted
         self._start_event_loop()
         self.warmup_thread = None
         self._start_warmup()
@@ -138,6 +147,31 @@ class Gateway:
         except (TypeError, ValueError):
             return 60.0
 
+    def _shutdown_timeout(self):
+        """Drain budget for close(), in seconds (``gateway.shutdown_timeout``).
+
+        Measured on this machine by the 200-concurrent-request, close-mid-load
+        test in tests/test_gateway.py, with the burst fully drained (30 runs per
+        interpreter, min/median/max of the time close() took):
+
+            python 3.13:  2.079 / 3.881 / 8.089 s
+            python 3.9:   9.266 / 10.906 / 13.266 s
+
+        The 5 s budget close() used to carry was exhausted by every single 3.9
+        run; 30 s leaves ~2.3x headroom over the slowest measured drain and
+        ~3.7x over the slowest 3.13 drain, so a backlog a few times the tested
+        burst is still drained rather than traded for a prompt exit. It costs
+        nothing in the normal case because close() returns as soon as the queue
+        is empty; it only bites when a task is wedged, which is exactly the case
+        where a short budget would lose turns a client was already served for.
+        Callers needing a hard bound pass ``timeout=`` explicitly.
+        """
+        try:
+            value = float(self.options.get("shutdown_timeout", 30.0))
+        except (TypeError, ValueError):
+            return 30.0
+        return value if value >= 0.0 else 30.0
+
     def _submit(self, coro, timeout=None):
         """Run ``coro`` on the persistent loop from a request thread and block.
 
@@ -157,23 +191,64 @@ class Gateway:
             future.cancel()
             raise
 
+    def _reserve_turn(self):
+        """Claim the right to record this request's turn; False if shutting down.
+
+        A handler calls this BEFORE it writes any response byte.  From that
+        moment until ``_release_turn`` the gateway is not allowed to stop its
+        event loop, so a client that can see a 200 is guaranteed that its
+        record_turn — and the facts it extracts — will still run.  Returning
+        False means shutdown already decided to stop, and the caller must refuse
+        the request loudly instead of answering 200 and losing the turn.
+        """
+        with self._bg_cv:
+            if self._stopping:
+                return False
+            self._turn_windows += 1
+            return True
+
+    def _release_turn(self):
+        with self._bg_cv:
+            self._turn_windows -= 1
+            self._bg_cv.notify_all()
+
     def _fire(self, coro):
         """Schedule ``coro`` on the persistent loop without blocking the caller.
 
         Used for the post-response record_turn; failures are logged, not raised.
+
+        Shutdown rules: once ``close()`` has begun (``_closed``), the same work
+        is still scheduled but the calling thread waits for it, so no turn that
+        a client was already promised can be left running past the drain.  Once
+        the loop is being stopped (``_stopping``) the work cannot run at all, and
+        that is refused with a warning and a counter — never dropped silently.
         """
-        if self._loop is None or not self._loop.is_running():
-            close = getattr(coro, "close", None)
-            if close is not None:
-                close()  # don't leak an un-awaited coroutine
+        with self._bg_cv:
+            loop = self._loop
+            closing = self._closed
+            accepted = not self._stopping and loop is not None and loop.is_running()
+            future = None
+            if accepted:
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                self._bg_futures.add(future)
+                if closing:
+                    self._bg_cv.notify_all()
+        if future is None:
+            close_coro = getattr(coro, "close", None)
+            if close_coro is not None:
+                close_coro()  # don't leak an un-awaited coroutine
+            with self._bg_cv:
+                self.counters["record_refused"] = self.counters.get("record_refused", 0) + 1
+            log.warning(
+                "Cyrrus background work refused: the gateway event loop is shutting down; "
+                "this turn will not be recorded."
+            )
             return None
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        with self._bg_guard:
-            self._bg_futures.add(future)
 
         def _done(fut):
-            with self._bg_guard:
+            with self._bg_cv:
                 self._bg_futures.discard(fut)
+                self._bg_cv.notify_all()
             try:
                 exc = fut.exception()
             except concurrent.futures.CancelledError:
@@ -182,33 +257,80 @@ class Gateway:
                 log.warning("Cyrrus background task failed: %s", exc)
 
         future.add_done_callback(_done)
+        if closing:
+            # Closing: run it inline (block here) rather than let close() finish
+            # with this turn still queued.  The wait is bounded so a wedged task
+            # cannot wedge this request thread too; the future stays in
+            # _bg_futures, so the drain keeps accounting for it either way.
+            try:
+                future.result(timeout=self._context_timeout())
+            except concurrent.futures.TimeoutError:
+                log.warning("Cyrrus shutdown record still running after %ss; "
+                            "the drain will keep waiting for it.", self._context_timeout())
+            except Exception as exc:  # noqa: BLE001 - reported, never raised to a served client
+                log.warning("Cyrrus background task failed during shutdown: %s", exc)
         return future
 
-    def close(self, timeout=5.0):
+    def close(self, timeout=None):
         """Drain in-flight background work, then stop and join the loop thread.
 
-        Idempotent.  Safe to call even if the loop never started.
+        Idempotent.  Safe to call even if the loop never started.  ``timeout``
+        is the drain budget in seconds and defaults to
+        ``_shutdown_timeout()`` (``gateway.shutdown_timeout``).
+
+        Order matters and is the whole fix: the closing flag is set first, the
+        drain then repeats until *nothing* is pending — neither a queued
+        record_turn nor a handler that still owes one — and only after that is
+        the loop asked to stop, atomically with the flag that makes further work
+        refuse instead of schedule.  A single snapshot of the futures was what
+        used to lose turns whose handlers were mid-response.
+
+        Giving up is never silent: the drain timeout logs the three counts that
+        make up the loss (queued, still in flight, already refused) and states
+        how many served turns will not be recorded.
         """
-        if self._closed:
-            return
-        self._closed = True
-        loop = self._loop
+        with self._bg_cv:
+            if self._closed:
+                return
+            self._closed = True
+            loop = self._loop
         if loop is None:
             return
-        # Let queued record_turn futures finish while the loop is still alive.
-        with self._bg_guard:
-            pending = list(self._bg_futures)
-        for future in pending:
-            try:
-                future.result(timeout=timeout)
-            except Exception:  # noqa: BLE001 - shutdown is best-effort
-                pass
+        try:
+            budget = self._shutdown_timeout() if timeout is None else max(float(timeout), 0.0)
+        except (TypeError, ValueError):
+            budget = self._shutdown_timeout()
+        deadline = time.monotonic() + budget
+        with self._bg_cv:
+            while True:
+                if not self._bg_futures and self._turn_windows == 0:
+                    # Atomic with _reserve_turn()/_fire(): after this point no
+                    # thread can schedule anything, so stopping the loop cannot
+                    # cancel work a client was promised.
+                    self._stopping = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    queued = len(self._bg_futures)
+                    refused = self.counters.get("record_refused", 0)
+                    log.warning(
+                        "Cyrrus shutdown drain timed out after %ss: %d record_turn "
+                        "task(s) still queued, %d request(s) still in flight, %d turn(s) "
+                        "already refused since closing began. At least %d turn(s) that "
+                        "were served a response will not be recorded.",
+                        budget, queued, self._turn_windows, refused, queued + refused,
+                    )
+                    self._stopping = True
+                    break
+                self._bg_cv.wait(remaining)
         try:
             loop.call_soon_threadsafe(loop.stop)
         except RuntimeError:
             pass  # loop already stopped/closed
         if self._loop_thread is not None and self._loop_thread.is_alive():
-            self._loop_thread.join(timeout=timeout)
+            self._loop_thread.join(timeout=budget)
+            if self._loop_thread.is_alive():
+                log.warning("Cyrrus event loop thread did not exit within %ss.", budget)
         self._loop = None
         self._loop_thread = None
 
@@ -444,6 +566,15 @@ def make_handler(gateway):
                 return self._json(413, {"error": "request body exceeds 10 MB"})
             try: payload = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError): return self._json(400, {"error": "invalid JSON"})
+            records_turn = not payload.get("tools") and not any(
+                m.get("role") == "tool" for m in payload.get("messages", []))
+            # Claim the turn before a single response byte leaves: the client is
+            # about to see a 200, and after this point shutdown must wait for our
+            # record_turn instead of stopping the loop underneath it.  Refusing
+            # here is the clear "not recorded" answer; answering 200 and dropping
+            # the turn is what the old fire-and-forget did.
+            if records_turn and not gateway._reserve_turn():
+                return self._json(503, {"error": {"message": "gateway is shutting down; this turn was not recorded", "type": "shutdown"}})
             started = time.time(); gateway.counters["requests"] += 1
             try:
                 outgoing, session, user_text, trace = gateway.prepare(payload, self.headers)
@@ -476,11 +607,14 @@ def make_handler(gateway):
                             if line.startswith("data: ") and line[6:] != "[DONE]": assistant += json.loads(line[6:])["choices"][0].get("delta", {}).get("content", "")
                     else: assistant = json.loads(decoded)["choices"][0]["message"].get("content", "")
                 except Exception: pass
-                if not payload.get("tools") and not any(m.get("role") == "tool" for m in payload.get("messages", [])):
+                if records_turn:
                     gateway._fire(gateway.projector.record_turn(session, user_text, assistant))
                 gateway.add_trace(session, trace, started)
             except (URLError, ValueError) as exc:
                 self._json(502, {"error": {"message": str(exc), "type": "upstream_error"}})
+            finally:
+                if records_turn:
+                    gateway._release_turn()
     return Handler
 
 

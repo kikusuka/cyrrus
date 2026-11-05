@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import sqlite3
 import sys
 import threading
 import time
@@ -529,4 +530,412 @@ def test_gateway_clean_shutdown_process_exits(tmp_path):
         pytest.fail("gateway child did not exit within 90s (hanging thread)")
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     assert b"CHILD-DONE" in proc.stdout, proc.stdout.decode("utf-8", "replace")
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 — shutdown data loss: close() drained only a SNAPSHOT of the background
+# futures, so a record_turn that raced the drain was never awaited, and one
+# fired after the loop was stopped was dropped silently (record_turn is what
+# extracts and stores the turn's facts, so the facts went with it).
+# --------------------------------------------------------------------------- #
+async def _marker_extractor(user_text):
+    """Turn user text into one deterministic fact.
+
+    The fact's value is the request's own marker string, so a fresh SQLite
+    connection opened after close() proves, per session, that the turn was
+    recorded and its fact extracted.
+    """
+    return {"turn_marker": user_text}
+
+
+def _close_mid_load_burst(server, sessions, markers, close_after):
+    """One request per session, all released together, gateway closed once
+    ``close_after`` responses have landed.
+
+    Returns (results, shutdown_state): results is a list of
+    (session, marker, status_or_error) and shutdown_state records whether the
+    closer actually ran and how many responses had arrived when close() returned.
+    Closing mid-burst is the point: the handlers still between "response written"
+    and "record_turn fired" are exactly the work the old shutdown dropped.
+    """
+    results, guard = [], threading.Lock()
+    host, port = "127.0.0.1", server.server_address[1]
+    barrier = threading.Barrier(len(sessions), timeout=120)
+    burst_finished = threading.Event()
+    shutdown_state = {"closed": False, "delivered_at_close": 0, "drain_s": None}
+
+    def worker(index):
+        session, marker = sessions[index], markers[index]
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                results.append((session, marker, "barrier %r" % exc))
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=60)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": marker}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                results.append((session, marker, response.status))
+        except Exception as exc:  # noqa: BLE001 - reported, not asserted away
+            with guard:
+                results.append((session, marker, "error %r" % exc))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def closer():
+        while not burst_finished.is_set():
+            with guard:
+                delivered = len(results)
+            if delivered >= close_after:
+                break
+            burst_finished.wait(0.002)
+        if burst_finished.is_set() and len(results) < close_after:
+            return  # the burst ended before a mid-load close was possible
+        # Close the GATEWAY first, while handlers are still serving: that is the
+        # race that used to drop turns. Shutting the listening socket first would
+        # instead just refuse the backlog (178 of 200 connections in an earlier
+        # run), so the burst would barely touch the shutdown path at all.
+        drain_start = time.monotonic()
+        server.gateway.close()
+        with guard:
+            shutdown_state["closed"] = True
+            shutdown_state["delivered_at_close"] = len(results)
+            shutdown_state["drain_s"] = round(time.monotonic() - drain_start, 3)
+        server.shutdown()
+        server.server_close()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(sessions))]
+    closer_thread = threading.Thread(target=closer)
+    previous = sys.getswitchinterval()
+    # Same stress as the concurrency test: shrink the GIL switch interval so the
+    # shutdown/response interleaving actually overlaps instead of being rare.
+    sys.setswitchinterval(1e-4)
+    try:
+        for thread in threads:
+            thread.start()
+        closer_thread.start()
+        for thread in threads:
+            thread.join(timeout=180)
+        burst_finished.set()
+        closer_thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    for thread in threads:
+        if thread.is_alive():
+            results.append(("hung", "worker", "thread never finished"))
+    return results, shutdown_state
+
+
+def test_gateway_close_mid_load_records_every_delivered_turn(tmp_path, caplog):
+    """No request that got HTTP 200 may lose its turn or its facts at shutdown.
+
+    200 concurrent requests, one session each, close() called while the burst is
+    still in flight. After close() returns, every session that received a 200
+    must have (a) its turn in the projector history and (b) its marker fact in
+    SQLite — read through a brand-new connection, so nothing cached is counted.
+    """
+    n = 200
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    sessions = ["shut-%03d" % i for i in range(n)]
+    markers = ["remember marker-%03d" % i for i in range(n)]
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, fact_extractor=_marker_extractor)
+    server = create_server(config, projector=projector, port=0)
+    serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    serve_thread.start()
+    try:
+        results, shutdown_state = _close_mid_load_burst(server, sessions, markers,
+                                                        close_after=n // 20)
+        assert shutdown_state["closed"], "close() never ran during the burst"
+
+        delivered = [(session, marker) for session, marker, status in results if status == 200]
+        not_ok = [(session, status) for session, _m, status in results if status != 200]
+        assert delivered, "no request returned 200: %s" % (not_ok[:8],)
+
+        # The DB is opened only now, after close() has returned.
+        connection = sqlite3.connect(str(tmp_path / "memory.sqlite"))
+        try:
+            stored = set(connection.execute("SELECT session_id, keyword, value FROM facts"))
+        finally:
+            connection.close()
+
+        missing_facts = [(session, marker) for session, marker in delivered
+                         if (session, "turn_marker", marker) not in stored]
+        missing_turns = [session for session, _m in delivered
+                         if len(projector._histories.get(session) or ()) != 2]
+
+        # Diagnostic first, assertion second: shutdown behaviour is a race, so a
+        # failure report has to say how much was lost and where, not just "False".
+        # drain_s / refused / drain_timeout_warnings classify a failure: a loss
+        # with no warning is a real bug, a loss after "drain timed out" is the
+        # shutdown budget running out (slowness), which are different defects.
+        warnings_text = [record.getMessage() for record in caplog.records]
+        drain_timeouts = sum(1 for text in warnings_text if "drain timed out" in text)
+        report = (
+            "delivered=%d errors=%d close_returned_after=%d "
+            "turns_lost=%d facts_lost=%d drain_s=%s refused=%d drain_timeouts=%d "
+            "lost_samples=%s"
+            % (len(delivered), len(not_ok), shutdown_state["delivered_at_close"],
+               len(missing_turns), len(missing_facts), shutdown_state["drain_s"],
+               server.gateway.counters.get("record_refused", -1), drain_timeouts,
+               missing_turns[:6])
+        )
+        print("SHUTDOWN-LOSS " + report)
+
+        assert not missing_turns, "turn(s) lost at shutdown (report=%s)" % report
+        assert not missing_facts, "fact(s) lost at shutdown (report=%s)" % report
+        assert len(stored) == len(delivered), (
+            "stored %d facts for %d delivered requests" % (len(stored), len(delivered)))
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+_CLOSE_MID_LOAD_CHILD = '''
+import http.client, json, os, tempfile, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from cyrrus.config import validate_config
+from cyrrus.gateway import create_server
+from cyrrus.projector import Projector
+
+
+class Up(BaseHTTPRequestHandler):
+    daemon_threads = True
+    request_queue_size = 512
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers["Content-Length"])
+        self.rfile.read(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b\'{"choices":[{"message":{"content":"ok"}}]}\')
+
+
+up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+threading.Thread(target=up.serve_forever, daemon=True).start()
+
+
+async def _llm(m):
+    return "x"
+
+
+async def _extract(text):
+    return {"turn_marker": text}
+
+
+proj = Projector({"core_lamp": {"content": "Be concise."}}, _llm,
+                 memory_db_path=os.path.join(tempfile.mkdtemp(), "m.sqlite"),
+                 fact_extractor=_extract)
+cfg = validate_config({"provider": {"base_url": "http://127.0.0.1:%s/v1" % up.server_address[1], "model": "m"}})
+server = create_server(cfg, projector=proj, port=0)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+host, port = "127.0.0.1", server.server_address[1]
+
+done = []
+guard = threading.Lock()
+burst_over = threading.Event()
+
+
+def worker(i):
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=30)
+        conn.request("POST", "/v1/chat/completions",
+                     body=json.dumps({"model": "m", "user": "s%03d" % i,
+                                      "messages": [{"role": "user", "content": "remember marker-%03d" % i}]}),
+                     headers={"Content-Type": "application/json"})
+        r = conn.getresponse(); r.read()
+        with guard:
+            done.append(r.status)
+    except Exception as e:
+        with guard:
+            done.append(repr(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+threads = [threading.Thread(target=worker, args=(i,)) for i in range(60)]
+for t in threads:
+    t.start()
+
+while len(done) < 8:
+    if burst_over.wait(0.005):
+        break
+
+# Same order the burst test uses: gateway first, so the drain races live
+# handlers, then the listener.
+close = getattr(server.gateway, "close", None)
+if close:
+    close()
+server.shutdown()
+server.server_close()
+
+burst_over.set()
+for t in threads:
+    t.join(120)
+
+up.shutdown()
+up.server_close()
+leftover = [t.name for t in threading.enumerate()
+            if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+loop_thread = getattr(server.gateway, "_loop_thread", None)
+print("NONDAEMON=%s" % leftover)
+print("LOOP_ALIVE=%s" % bool(loop_thread and loop_thread.is_alive()))
+print("CHILD-DONE")
+'''
+
+
+def test_gateway_close_mid_load_child_exits_cleanly():
+    """Closing while traffic is in flight must still leave nothing hanging.
+
+    The drain makes close() wait for handlers, so it is the path most likely to
+    strand the loop thread or a non-daemon thread and wedge interpreter exit.
+    """
+    import subprocess
+    proc = subprocess.run([sys.executable, "-c", _CLOSE_MID_LOAD_CHILD],
+                          capture_output=True, timeout=180)
+    out = proc.stdout.decode("utf-8", "replace")
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")[-3000:]
+    assert "CHILD-DONE" in out, out
+    assert "NONDAEMON=[]" in out, "non-daemon threads left behind: %s" % out
+    assert "LOOP_ALIVE=False" in out, "event loop thread still alive: %s" % out
+
+
+def test_gateway_close_with_stalled_upstream_returns_and_speaks_up(tmp_path, caplog):
+    """A handler wedged on a slow upstream must not wedge close().
+
+    The drain waits for open turn windows, so an upstream that stops sending
+    mid-stream can only be ended by the budget.  close() has to return when the
+    budget runs out, say so unambiguously — including how many served turns will
+    not be recorded — and the stalled requests must then still complete instead
+    of deadlocking.
+    """
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    server, base = _start(config, _projector(tmp_path))
+    upstream.stream_gate = threading.Event()   # stalls after the first SSE chunk
+    outcomes, guard = [], threading.Lock()
+
+    def client():
+        try:
+            response = _request(base, {"model": "x", "stream": True,
+                                       "messages": [{"role": "user", "content": "go"}]})
+            body = response.read()             # blocks until the upstream resumes
+            with guard:
+                outcomes.append((response.status, len(body)))
+        except Exception as exc:  # noqa: BLE001 - reported through the assertion
+            with guard:
+                outcomes.append(repr(exc))
+
+    threads = [threading.Thread(target=client, daemon=True) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert upstream.first_sent.wait(10), "upstream never sent a first chunk"
+    time.sleep(0.2)  # let the other handlers reach the same stall
+
+    budget = 1.0
+    started = time.monotonic()
+    server.gateway.close(timeout=budget)
+    elapsed = time.monotonic() - started
+    assert elapsed < budget + 10.0, "close() did not return: deadlock (%.1fs)" % elapsed
+    assert elapsed >= budget, "close() returned before using the drain budget"
+
+    warnings = [r.getMessage() for r in caplog.records]
+    timed_out = [w for w in warnings if "drain timed out" in w]
+    assert timed_out, "stalled drain ended without a warning: %s" % warnings
+    assert "will not be recorded" in timed_out[0], timed_out[0]
+    assert server.gateway._loop_thread is None, "loop thread kept after close()"
+
+    upstream.stream_gate.set()  # the stalled requests must now finish on their own
+    for thread in threads:
+        thread.join(30)
+    assert not any(t.is_alive() for t in threads), "request thread stuck after close()"
+    assert len(outcomes) == 5, outcomes
+    assert all(isinstance(o, tuple) and o[0] == 200 and o[1] > 0 for o in outcomes), outcomes
+    server.gateway.close()  # idempotent
+    upstream.shutdown(); upstream.server_close()
+
+
+def test_gateway_close_with_failing_extractor_drains_fast_and_cleanly(tmp_path, caplog):
+    """A broken extractor must not turn shutdown into a hang or a silent loss.
+
+    record_turn swallows extractor failures and falls back to the built-in
+    facts, so every background future still resolves: the drain must finish on
+    its first pass — well inside the budget, with no timeout warning — and the
+    turn itself must survive in history.
+    """
+    caplog.set_level("WARNING", logger="cyrrus.projector")
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    failures = []
+
+    def exploding_extractor(user_text):
+        failures.append(user_text)
+        raise RuntimeError("extractor exploded")
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, fact_extractor=exploding_extractor)
+    server, base = _start(config, projector)
+    try:
+        n = 20
+        statuses = []
+        status_guard = threading.Lock()
+
+        def client(i):
+            try:
+                statuses.append(_request(base, {"model": "x", "user": "boom-%03d" % i,
+                                                "messages": [{"role": "user",
+                                                              "content": "remember %d" % i}]}).status)
+            except Exception as exc:  # noqa: BLE001
+                with status_guard:
+                    statuses.append(repr(exc))
+
+        threads = [threading.Thread(target=client, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        assert not any(t.is_alive() for t in threads), "request thread hung"
+        assert len(statuses) == n and all(s == 200 for s in statuses), statuses
+        assert failures, "extractor never ran"
+
+        started = time.monotonic()
+        server.gateway.close()
+        drain_s = round(time.monotonic() - started, 3)
+        warnings = [r.getMessage() for r in caplog.records]
+        print("EXTRACTOR-FAIL-DRAIN drain_s=%s timeouts=%d extractor_warnings=%d"
+              % (drain_s, sum(1 for w in warnings if "drain timed out" in w),
+                 sum(1 for w in warnings if "extractor failed" in w)))
+        assert drain_s < 5.0, "failing extractor made the drain slow: %ss" % drain_s
+        assert not [w for w in warnings if "drain timed out" in w], warnings
+        assert sum(1 for w in warnings if "extractor failed" in w) >= 1, warnings
+        assert server.gateway.counters.get("record_refused", 0) == 0
+        recorded = [s for s in ("boom-%03d" % i for i in range(n))
+                    if len(projector._histories.get(s) or ()) == 2]
+        assert len(recorded) == n, "turn(s) lost with a failing extractor: %s" % recorded
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
 
