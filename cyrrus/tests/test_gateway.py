@@ -294,11 +294,26 @@ def test_request_body_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_module, "MAX_BODY", 32)
     upstream, _, server, _ = _with_upstream(tmp_path)
     host, port = "127.0.0.1", server.server_address[1]
-    conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
-        body = b"x" * 100
-        conn.request("POST", "/v1/chat/completions", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
-        assert conn.getresponse().status == 413
+        # Oversized 1 MB body, repeated: if the server answers 413 without
+        # draining the request body, its socket close sends a TCP RST and the
+        # client's read intermittently dies with ConnectionAbortedError
+        # (WinError 10053 on Windows). No sleeps; determinism comes from the
+        # server fully reading the request before it responds and closes.
+        body = b"x" * (1024 * 1024)
+        for _ in range(30):
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                conn.request(
+                    "POST", "/v1/chat/completions", body=body,
+                    headers={"Content-Type": "application/json",
+                             "Content-Length": str(len(body))},
+                )
+                response = conn.getresponse()
+                assert response.status == 413
+                response.read()
+            finally:
+                conn.close()
     finally:
-        conn.close(); server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
+        server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
 

@@ -250,7 +250,17 @@ def make_handler(gateway):
             if not self._auth(): return
             if self.path != "/v1/chat/completions": return self._json(404, {"error": "not found"})
             length = int(self.headers.get("Content-Length", "0"))
-            if length > MAX_BODY: return self._json(413, {"error": "request body exceeds 10 MB"})
+            if length > MAX_BODY:
+                # Drain the rejected body before responding. Closing a socket
+                # with unread request data sends a TCP RST, which can abort
+                # the client's read of the 413 (WinError 10053 on Windows).
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                return self._json(413, {"error": "request body exceeds 10 MB"})
             try: payload = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError): return self._json(400, {"error": "invalid JSON"})
             started = time.time(); gateway.counters["requests"] += 1
