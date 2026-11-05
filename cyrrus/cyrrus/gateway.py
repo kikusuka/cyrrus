@@ -212,6 +212,17 @@ class Gateway:
             self._turn_windows -= 1
             self._bg_cv.notify_all()
 
+    def pending_turns(self):
+        """Turns the shutdown drain is still waiting for: queued plus in flight."""
+        with self._bg_cv:
+            return len(self._bg_futures) + self._turn_windows
+
+    def shutdown_counts(self):
+        """(queued, in flight, refused) — the parts of a shutdown loss."""
+        with self._bg_cv:
+            return (len(self._bg_futures), self._turn_windows,
+                    self.counters.get("record_refused", 0))
+
     def _fire(self, coro):
         """Schedule ``coro`` on the persistent loop without blocking the caller.
 
@@ -311,15 +322,10 @@ class Gateway:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    queued = len(self._bg_futures)
-                    refused = self.counters.get("record_refused", 0)
                     log.warning(
-                        "Cyrrus shutdown drain timed out after %ss: %d record_turn "
-                        "task(s) still queued, %d request(s) still in flight, %d turn(s) "
-                        "already refused since closing began. At least %d turn(s) that "
-                        "were served a response will not be recorded.",
-                        budget, queued, self._turn_windows, refused, queued + refused,
-                    )
+                        "Cyrrus shutdown drain timed out after %ss: %s",
+                        budget, _loss_summary(len(self._bg_futures), self._turn_windows,
+                                              self.counters.get("record_refused", 0)))
                     self._stopping = True
                     break
                 self._bg_cv.wait(remaining)
@@ -634,11 +640,61 @@ def create_server(config, projector=None, host=None, port=None, log_prompts=Fals
             port += 1
 
 
-def serve(config, host=None, port=None, log_prompts=False):
-    server = create_server(config, host=host, port=port, log_prompts=log_prompts)
+def _loss_summary(queued, in_flight, refused):
+    """One wording for "what a shutdown gave up", shared by the drain timeout and
+    the forced quit so the two can never drift apart."""
+    return ("%d record_turn task(s) still queued, %d request(s) still in flight, "
+            "%d turn(s) already refused; at least %d served turn(s) will not be "
+            "recorded" % (queued, in_flight, refused, queued + refused))
+
+
+def drain_notice(gateway):
+    """Say what the first Ctrl+C is doing; returns the pending turn count.
+
+    Without this the operator pressing Ctrl+C sees nothing while the gateway
+    waits on turns that have already been served a response - the same silence
+    that used to make the old shutdown look like a clean exit.
+    """
+    pending = gateway.pending_turns()
+    if pending:
+        print("Cyrrus serve: draining %d pending turns, press Ctrl+C again to "
+              "force quit" % pending, flush=True)
+    return pending
+
+
+def forced_quit(gateway, _exit=os._exit):
+    """Abandon the drain and exit now, after printing what that loses.
+
+    ``_exit`` is injectable so the accounting is testable in-process; the
+    interpreter-exit path itself cannot be, since it ends the process.
+    """
+    queued, in_flight, refused = gateway.shutdown_counts()
+    text = "Cyrrus serve: FORCED QUIT (Ctrl+C during drain) - " + _loss_summary(
+        queued, in_flight, refused)
+    log.warning(text)
+    print(text, flush=True)
+    _exit(1)
+
+
+def serve(config, host=None, port=None, log_prompts=False, projector=None):
+    server = create_server(config, projector=projector, host=host, port=port, log_prompts=log_prompts)
     print("Cyrrus gateway: http://%s:%s/v1  model=%s  mode=%s" % (server.server_address[0], server.server_address[1], config.get("provider", {}).get("model") or "(unset)", config["gateway"]["mode"]))
-    try: server.serve_forever()
-    except KeyboardInterrupt: pass
-    finally:
+    draining = False
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pending = drain_notice(server.gateway)
+        draining = True
+    try:
         server.server_close()
         server.gateway.close()
+    except KeyboardInterrupt:
+        if not draining:
+            raise
+        # Second Ctrl+C: the caller has already been told the drain is running,
+        # so quitting here is a choice, not an accident - say what it costs.
+        forced_quit(server.gateway)
+    if draining:
+        queued, in_flight, refused = server.gateway.shutdown_counts()
+        print("Cyrrus serve: drained (%s)" % _loss_summary(queued, in_flight, refused),
+              flush=True)
