@@ -9,16 +9,22 @@ the model's context for a given query. It does NOT measure model answer quality
 -- no LLM is called and no answers are graded. Recall / stale-leak / token
 counts describe the context that *would* be injected.
 
-Three strategies are compared on identical scenarios:
+Four strategies are compared on identical scenarios:
 
   full_dump   -- inject every stored fact row (session-agnostic, uncapped).
                  The "send everything every time" baseline.
   recent_n    -- inject the N most-recently-stored fact rows (global recency
                  window, N = MAX_FACTS). Recency, not relevance.
+  bm25_all    -- plain BM25 over every row ever stored for the session, with
+                 NO supersession: stale/superseded versions stay rankable.
+                 Isolates what the temporal layer contributes on top of BM25.
   cyrrus      -- the real cyrrus default: MemoryVault.retrieve(), i.e. BM25
                  relevance ranking over all active facts for the session,
                  capped at MAX_FACTS. This is exactly the mechanism
                  Projector._prepare_turn uses to inject user facts.
+
+Scenarios where cyrrus currently fails (recall < 1.0 or stale_leak > 0) are
+marked "known-weak" in the output instead of being hidden.
 
 Metrics (aggregated per scenario):
   recall          -- mean fraction of needed facts present in injected context
@@ -28,8 +34,11 @@ Metrics (aggregated per scenario):
                      user's facts. Lower is better (0 = clean).
   injected_tokens -- mean injected fact tokens per probe. Lower is better.
 
-Determinism: fixed RNG seed, no network, no LLM, no wall-clock-dependent logic.
-Runtime target: well under 60 seconds (dominated by the 5,000-row scenario).
+A separate latency section reports median / p95 / first-call wall time per
+retrieve at 1k / 5k / 50k stored facts for every strategy.
+
+Determinism: fixed RNG seed, no network, no LLM, no wall-clock-dependent logic
+(wall-clock is only *measured* in the latency section, never branched on).
 
 Run:
     python devtools/bench/bench.py            # table to stdout + JSON alongside
@@ -43,6 +52,8 @@ import json
 import os
 import random
 import shutil
+import sqlite3
+import statistics
 import sys
 import tempfile
 import time
@@ -53,11 +64,15 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(_HERE))  # .../cyrrus (project root)
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 
+from cyrrus.bm25 import bm25_rank_facts  # noqa: E402
 from cyrrus.memory import MemoryVault  # noqa: E402
 
 SEED = 1234
-MAX_FACTS = 5          # injection budget for recent_n and cyrrus
+MAX_FACTS = 5          # injection budget for recent_n, bm25_all and cyrrus
 DISTRACTOR_SIZES = [50, 500, 5000]
+LATENCY_SIZES = [1000, 5000, 50000]
+LATENCY_PROBES = 10
+SYSTEM_ORDER = ("cyrrus", "bm25_all", "recent_n", "full_dump")
 
 
 # --------------------------------------------------------------------------- #
@@ -98,6 +113,16 @@ async def inject_recent_n(store: FactStore, session: str, query: str):
     return [(kw, val) for (_s, kw, val) in store.log[-MAX_FACTS:]]
 
 
+async def inject_bm25_all(store: FactStore, session: str, query: str):
+    # Plain BM25 over every row EVER stored for the session, with no
+    # supersession: stale/superseded versions remain rankable. This isolates
+    # what cyrrus's temporal layer adds on top of the same ranking function.
+    facts = [(kw, val, fact_tokens(kw, val))
+             for (s, kw, val) in store.log if s == session]
+    ranked = bm25_rank_facts(facts, query, limit=MAX_FACTS, score_threshold=0.0)
+    return [(kw, val) for (_score, kw, val, _tok) in ranked]
+
+
 async def inject_cyrrus(store: FactStore, session: str, query: str):
     # Real cyrrus default: BM25 relevance over all active facts, capped.
     slides = await store.vault.retrieve(session, query, limit=MAX_FACTS)
@@ -114,6 +139,7 @@ async def inject_cyrrus(store: FactStore, session: str, query: str):
 SYSTEMS = {
     "full_dump": inject_full_dump,
     "recent_n": inject_recent_n,
+    "bm25_all": inject_bm25_all,
     "cyrrus": inject_cyrrus,
 }
 
@@ -203,6 +229,99 @@ def build_scenarios():
                                        ("user_city", "Berlin")]))
     scenarios.append({"name": "multi_user", "steps": steps})
 
+    # 6. Paraphrase: queries deliberately share NO token with the stored
+    #    fact's keyword, its KEY_ALIASES expansion, or its value. Lexical
+    #    BM25 cannot bridge these; cyrrus is expected to fail (known-weak).
+    #    Cases are interleaved store/probe so each probe sees only facts
+    #    stored up to that point (checked: no query token matches any
+    #    earlier fact's document either).
+    paraphrase_cases = [
+        ("user_favorite_drink", "espresso",
+         "what beverage do I order every morning?"),
+        ("car_model", "Subaru Outback",
+         "which vehicle am I driving these days?"),
+        ("residence_town", "Braga",
+         "which municipality do I reside in?"),
+        ("married_to", "Marta",
+         "which person did I wed?"),
+        ("daily_routine", "runs at dawn",
+         "what exercise do I do when the sun rises?"),
+        ("preferred_genre", "science fiction novels",
+         "which books am I into?"),
+        ("office_floor", "third floor",
+         "on which storey is my desk?"),
+        ("sibling_count", "two brothers",
+         "how many relatives of mine are male?"),
+        ("morning_meal", "oatmeal with berries",
+         "what do I eat after waking up?"),
+        ("evening_activity", "chess club",
+         "what game do I play after dark?"),
+        ("transportation_mode", "bicycle",
+         "how do I commute each weekday?"),
+        ("dream_destination", "Kyoto",
+         "where would I travel someday?"),
+    ]
+    steps = []
+    for kw, val, query in paraphrase_cases:
+        steps.append(store_step("s", kw, val))
+        steps.append(probe_step("s", query, need={kw: val}, forbidden=[]))
+    scenarios.append({"name": "paraphrase_no_overlap", "steps": steps})
+
+    # 7. Near-duplicate distractors: 30 facts about OTHER cities/pets/jobs
+    #    compete with the user's three real facts. Keyword-alias expansion
+    #    makes distractor documents nearly identical to the real ones for
+    #    pet/city queries; only queries containing a uniquely discriminating
+    #    term ("employer") can separate them.
+    other_cities = ["Madrid", "Berlin", "Vienna", "Dublin", "Oslo",
+                    "Rome", "Athens", "Dubrovnik", "Seville", "Ghent"]
+    other_pets = ["hamster Max", "parrot Kiwi", "rabbit Snow", "goldfinch Pip",
+                  "turtle Shell", "iguana Rex", "ferret Bandit", "goat Basil",
+                  "mouse Squeak", "snake Willow"]
+    other_jobs = ["barista at Nordcoffee", "analyst at DataHive",
+                  "nurse at CityHospital", "pilot at AeroWing",
+                  "teacher at EastHigh", "chef at MaisonRouge",
+                  "clerk at PostOffice", "engineer at BuildRight",
+                  "editor at PressHouse", "trainer at FitZone"]
+    steps = [
+        store_step("s", "user_location", "Lisbon"),
+        store_step("s", "user_pet", "gecko named Ziggy"),
+        store_step("s", "user_employer", "CloudCorp"),
+    ]
+    for i, c in enumerate(other_cities):
+        steps.append(store_step("s", "city_profile_%02d" % i,
+                                "%s is a metro area with museums" % c))
+    for i, p in enumerate(other_pets):
+        steps.append(store_step("s", "pet_profile_%02d" % i,
+                                "profile of %s kept indoors" % p))
+    for i, j in enumerate(other_jobs):
+        steps.append(store_step("s", "job_posting_%02d" % i,
+                                "opening for %s downtown" % j))
+    steps.append(probe_step("s", "where do I live?",
+                            need={"user_location": "Lisbon"}, forbidden=[]))
+    steps.append(probe_step("s", "what pet do I have?",
+                            need={"user_pet": "gecko named Ziggy"},
+                            forbidden=[]))
+    steps.append(probe_step("s", "who is my employer?",
+                            need={"user_employer": "CloudCorp"},
+                            forbidden=[]))
+    scenarios.append({"name": "near_dup_30", "steps": steps})
+
+    # 8. Different-key correction: "I no longer like pizza" gets stored under
+    #    a NEW keyword; the old preference stays active because supersession
+    #    only replaces the same (session, keyword). The stale fact remains
+    #    injectable -- a known weakness of key-based supersession without a
+    #    smarter extractor.
+    scenarios.append({
+        "name": "correction_different_key",
+        "steps": [
+            store_step("s", "user_preference", "likes pizza"),
+            store_step("s", "user_disliked_food", "no longer likes pizza"),
+            probe_step("s", "what food do I like?",
+                       need={"user_disliked_food": "no longer likes pizza"},
+                       forbidden=[("user_preference", "likes pizza")]),
+        ],
+    })
+
     return scenarios
 
 
@@ -261,15 +380,95 @@ async def run_all():
 
 
 # --------------------------------------------------------------------------- #
+# Latency: median / p95 / first-call wall time per retrieve at scale.
+# Facts are bulk-inserted through a second SQLite connection, which also
+# exercises cyrrus's cross-connection staleness detection (PRAGMA data_version).
+# --------------------------------------------------------------------------- #
+LAT_QUERIES = [
+    "where do I live?",                      # matches one fact (small candidate set)
+    "unrelated query about nothing stored",  # matches nothing
+    "filler record about shipping",          # matches MANY notes (large postings)
+    "note record filler unrelated",          # matches MANY notes (very common terms)
+    "what is my name?",
+]
+
+
+async def run_latency():
+    out = {}
+    for n in LATENCY_SIZES:
+        db_dir = tempfile.mkdtemp(prefix="cyrrus_bench_lat_")
+        try:
+            store = FactStore(db_dir)
+            # One normal store creates the schema and the target fact.
+            await store.store("s", "user_location", "Lisbon")
+
+            rng = random.Random(SEED + n)
+            topics = ["weather", "traffic", "groceries", "calendar", "hardware",
+                      "shipping", "invoice", "meeting", "backup", "release"]
+            base = time.time()
+            rows = []
+            for i in range(n - 1):
+                kw = "note_%06d" % i
+                val = "unrelated filler record %d about %s" % (
+                    i, topics[rng.randrange(len(topics))])
+                rows.append(("s", kw, val, fact_tokens(kw, val),
+                             base + i * 0.001, "2026-01-01T00:00:00", None))
+            conn = sqlite3.connect(store.db_path)
+            conn.executemany(
+                "INSERT INTO facts (session_id, keyword, value, tokens, "
+                "last_accessed, valid_at, invalid_at) VALUES (?,?,?,?,?,?,?)",
+                rows)
+            conn.commit()
+            conn.close()
+            for (s, kw, val, _t, _la, _va, _ia) in rows:
+                store.log.append((s, kw, val))
+
+            timings = {name: [] for name in SYSTEMS}
+            for p in range(LATENCY_PROBES):
+                q = LAT_QUERIES[p % len(LAT_QUERIES)]
+                for name, inject in SYSTEMS.items():
+                    t0 = time.perf_counter()
+                    await inject(store, "s", q)
+                    timings[name].append((time.perf_counter() - t0) * 1000.0)
+
+            out[str(n)] = {}
+            for name in SYSTEMS:
+                ts = sorted(timings[name])
+                p95 = ts[max(0, int(len(ts) * 0.95) - 1)]
+                out[str(n)][name] = {
+                    "median_ms": round(statistics.median(ts), 2),
+                    "p95_ms": round(p95, 2),
+                    "first_call_ms": round(timings[name][0], 2),
+                    "probes": len(ts),
+                }
+        finally:
+            shutil.rmtree(db_dir, ignore_errors=True)
+    return out
+
+
+def known_weak_reasons(systems):
+    """Why cyrrus currently fails this scenario (empty list = not weak)."""
+    c = systems["cyrrus"]
+    reasons = []
+    if c["recall"] < 1.0:
+        reasons.append("recall %.3f < 1.0" % c["recall"])
+    if c["stale_leak"] > 0:
+        reasons.append("stale_leak %d > 0" % c["stale_leak"])
+    return reasons
+
+
+# --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
 DISCLAIMER = (
     "Measures injection quality (which stored facts enter the context), "
-    "NOT model answer quality. No LLM is called."
+    "NOT model answer quality. No LLM is called. This harness is written and "
+    "maintained by the same team as the cyrrus fixes it compares against -- "
+    "treat cross-system numbers with that bias in mind."
 )
 
 
-def to_markdown(results):
+def to_markdown(results, latency):
     lines = []
     lines.append("# cyrrus context-injection benchmark")
     lines.append("")
@@ -278,16 +477,31 @@ def to_markdown(results):
     lines.append("recall: higher is better (1.0 = every needed fact injected). "
                  "stale_leak: lower is better (0 = no superseded/expired/"
                  "cross-user facts). injected_tokens: mean per probe, lower is "
-                 "better. Budget for recent_n and cyrrus = %d facts." % MAX_FACTS)
+                 "better. Budget for recent_n, bm25_all and cyrrus = %d facts. "
+                 "[known-weak] marks scenarios cyrrus currently fails "
+                 "(recall < 1.0 or stale_leak > 0); they are shown, not hidden."
+                 % MAX_FACTS)
     lines.append("")
     lines.append("| scenario | system | recall | stale_leak | injected_tokens |")
     lines.append("|---|---|---|---|---|")
     for sc_name, systems in results.items():
-        for sys_name in ("cyrrus", "recent_n", "full_dump"):
+        weak = systems.get("known_weak", [])
+        label = sc_name + (" [known-weak: %s]" % "; ".join(weak) if weak else "")
+        for sys_name in SYSTEM_ORDER:
             m = systems[sys_name]
             lines.append("| %s | %s | %.3f | %d | %.1f |" % (
-                sc_name, sys_name, m["recall"], m["stale_leak"],
+                label, sys_name, m["recall"], m["stale_leak"],
                 m["injected_tokens"]))
+    lines.append("")
+    lines.append("## Latency (ms per retrieve, %d probes each; first_call includes cold index build for cyrrus)" % LATENCY_PROBES)
+    lines.append("")
+    lines.append("| facts | system | median | p95 | first_call |")
+    lines.append("|---|---|---|---|---|")
+    for size in sorted(latency, key=int):
+        for sys_name in SYSTEM_ORDER:
+            m = latency[size][sys_name]
+            lines.append("| %s | %s | %.2f | %.2f | %.2f |" % (
+                size, sys_name, m["median_ms"], m["p95_ms"], m["first_call_ms"]))
     lines.append("")
     return "\n".join(lines)
 
@@ -301,9 +515,12 @@ def main():
 
     start = time.time()
     results = asyncio.run(run_all())
+    for sc_name, systems in results.items():
+        systems["known_weak"] = known_weak_reasons(systems)
+    latency = asyncio.run(run_latency())
     elapsed = time.time() - start
 
-    md = to_markdown(results)
+    md = to_markdown(results, latency)
     print(md)
     print("Total benchmark time: %.1fs (seed=%d, offline, no LLM)." % (elapsed, SEED))
 
@@ -313,6 +530,7 @@ def main():
         "max_facts": MAX_FACTS,
         "elapsed_s": round(elapsed, 2),
         "results": results,
+        "latency_ms": latency,
     }
     with open(args.json, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)

@@ -1,8 +1,8 @@
 {
-  "disclaimer": "Measures injection quality (which stored facts enter the context), NOT model answer quality. No LLM is called.",
+  "disclaimer": "Measures injection quality (which stored facts enter the context), NOT model answer quality. No LLM is called. This harness is written and maintained by the same team as the cyrrus fixes it compares against -- treat cross-system numbers with that bias in mind.",
   "seed": 1234,
   "max_facts": 5,
-  "elapsed_s": 11.2,
+  "elapsed_s": 33.08,
   "results": {
     "updated_fact": {
       "full_dump": {
@@ -15,11 +15,17 @@
         "stale_leak": 1,
         "injected_tokens": 6.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 6.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 3.0
-      }
+      },
+      "known_weak": []
     },
     "buried_50": {
       "full_dump": {
@@ -32,11 +38,17 @@
         "stale_leak": 0,
         "injected_tokens": 40.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 3.0
-      }
+      },
+      "known_weak": []
     },
     "buried_500": {
       "full_dump": {
@@ -49,11 +61,17 @@
         "stale_leak": 0,
         "injected_tokens": 40.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 3.0
-      }
+      },
+      "known_weak": []
     },
     "buried_5000": {
       "full_dump": {
@@ -66,11 +84,17 @@
         "stale_leak": 0,
         "injected_tokens": 40.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 3.0
-      }
+      },
+      "known_weak": []
     },
     "topic_switch": {
       "full_dump": {
@@ -83,11 +107,17 @@
         "stale_leak": 1,
         "injected_tokens": 6.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 3.0
-      }
+      },
+      "known_weak": []
     },
     "preference_recall": {
       "full_dump": {
@@ -100,11 +130,17 @@
         "stale_leak": 0,
         "injected_tokens": 40.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 4.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 4.0
-      }
+      },
+      "known_weak": []
     },
     "multi_user": {
       "full_dump": {
@@ -117,10 +153,169 @@
         "stale_leak": 0,
         "injected_tokens": 40.0
       },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 6.0
+      },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
         "injected_tokens": 6.0
+      },
+      "known_weak": []
+    },
+    "paraphrase_no_overlap": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 25.8
+      },
+      "recent_n": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 16.8
+      },
+      "bm25_all": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 0.0
+      },
+      "cyrrus": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 0.0
+      },
+      "known_weak": [
+        "recall 0.000 < 1.0"
+      ]
+    },
+    "near_dup_30": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 291.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 45.0
+      },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 29.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 29.0
+      },
+      "known_weak": []
+    },
+    "correction_different_key": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 11.0
+      },
+      "recent_n": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 11.0
+      },
+      "bm25_all": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 11.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 11.0
+      },
+      "known_weak": [
+        "stale_leak 1 > 0"
+      ]
+    }
+  },
+  "latency_ms": {
+    "1000": {
+      "full_dump": {
+        "median_ms": 0.19,
+        "p95_ms": 1.0,
+        "first_call_ms": 1.0,
+        "probes": 10
+      },
+      "recent_n": {
+        "median_ms": 0.01,
+        "p95_ms": 0.01,
+        "first_call_ms": 0.01,
+        "probes": 10
+      },
+      "bm25_all": {
+        "median_ms": 33.08,
+        "p95_ms": 33.99,
+        "first_call_ms": 28.45,
+        "probes": 10
+      },
+      "cyrrus": {
+        "median_ms": 3.04,
+        "p95_ms": 7.78,
+        "first_call_ms": 32.93,
+        "probes": 10
+      }
+    },
+    "5000": {
+      "full_dump": {
+        "median_ms": 1.38,
+        "p95_ms": 2.44,
+        "first_call_ms": 1.89,
+        "probes": 10
+      },
+      "recent_n": {
+        "median_ms": 0.01,
+        "p95_ms": 0.02,
+        "first_call_ms": 0.02,
+        "probes": 10
+      },
+      "bm25_all": {
+        "median_ms": 190.8,
+        "p95_ms": 211.37,
+        "first_call_ms": 161.31,
+        "probes": 10
+      },
+      "cyrrus": {
+        "median_ms": 16.21,
+        "p95_ms": 30.33,
+        "first_call_ms": 182.56,
+        "probes": 10
+      }
+    },
+    "50000": {
+      "full_dump": {
+        "median_ms": 24.88,
+        "p95_ms": 121.32,
+        "first_call_ms": 18.44,
+        "probes": 10
+      },
+      "recent_n": {
+        "median_ms": 0.02,
+        "p95_ms": 0.03,
+        "first_call_ms": 0.03,
+        "probes": 10
+      },
+      "bm25_all": {
+        "median_ms": 1899.6,
+        "p95_ms": 2086.04,
+        "first_call_ms": 1562.02,
+        "probes": 10
+      },
+      "cyrrus": {
+        "median_ms": 183.63,
+        "p95_ms": 255.15,
+        "first_call_ms": 2059.89,
+        "probes": 10
       }
     }
   }

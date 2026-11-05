@@ -2,17 +2,24 @@
 
 Deterministic, offline, standard-library-only benchmark that compares **context
 injection strategies** — not model answers. No LLM is called and no network is
-used. A full run finishes in well under 60 seconds (the 5,000-row scenario
-dominates).
+used. A full run (quality scenarios + latency at 1k/5k/50k facts) finishes in
+about a minute.
+
+> **Honesty note.** This harness measures *injection quality* — which stored
+> facts each strategy would put into the model's context — **not** answer
+> quality. It is written and maintained by the same team as the cyrrus fixes it
+> compares against, so treat cross-system numbers with that bias in mind.
+> Scenarios cyrrus currently fails are marked `[known-weak]` in the output
+> instead of being hidden.
 
 Run it with the project's interpreter (editable install or source checkout):
 
 ```
-python devtools/bench/bench.py                 # prints a markdown table
+python devtools/bench/bench.py                 # prints markdown tables
 python devtools/bench/bench.py --json out.json # choose the JSON output path
 ```
 
-It prints a markdown table to stdout and writes `bench_results.json` next to
+It prints markdown tables to stdout and writes `bench_results.json` next to
 `bench.py` by default.
 
 ## What it measures
@@ -26,6 +33,16 @@ what each strategy would inject into the model context:
   scenario's probes: superseded values, expired old-topic facts, or another
   user's facts. Lower is better (0 = clean).
 - **injected_tokens** — mean injected fact tokens per probe. Lower is better.
+- **known_weak** — list of reasons cyrrus currently fails the scenario
+  (recall < 1.0 or stale_leak > 0). Shown in the table as `[known-weak: ...]`.
+
+The latency section reports **median / p95 / first-call** milliseconds per
+retrieve at 1,000 / 5,000 / 50,000 stored facts for every strategy. Facts are
+bulk-inserted through a second SQLite connection, which also exercises cyrrus's
+cross-connection staleness detection. cyrrus's `first_call` includes the cold
+per-session index build (~2.7s at 50k); warm retrieves reuse the index. Probe
+queries deliberately include high-frequency terms that match most rows, so the
+numbers reflect a near-worst case for the inverted index, not just easy queries.
 
 ## Strategies compared
 
@@ -33,10 +50,11 @@ what each strategy would inject into the model context:
 |---|---|
 | `full_dump` | inject every stored row, session-agnostic and uncapped ("send everything") |
 | `recent_n` | inject the `MAX_FACTS` most-recently-stored rows globally (recency window) |
-| `cyrrus` | the real cyrrus default: `MemoryVault.retrieve()` — BM25 relevance over all active facts for the session, capped at `MAX_FACTS` |
+| `bm25_all` | plain BM25 over every row ever stored for the session, **no supersession** — stale/superseded versions stay rankable. Isolates what cyrrus's temporal layer adds on top of the same ranking function |
+| `cyrrus` | the real cyrrus default: `MemoryVault.retrieve()` — BM25 relevance over all *active* facts for the session (per-session inverted index), capped at `MAX_FACTS` |
 
 `cyrrus` drives the actual retrieval code `Projector._prepare_turn` uses, so its
-numbers reflect real cyrrus behavior. The two baselines are intentionally naive
+numbers reflect real cyrrus behavior. The baselines are intentionally naive
 strategies that read the same stored row log.
 
 ## Scenarios
@@ -48,6 +66,15 @@ strategies that read the same stored row log.
   injected for a new-topic query (ghost/old context expiry).
 - `preference_recall` — a preference buried under distractors must still surface.
 - `multi_user` — Alice's query must recall Alice's facts and never inject Bob's.
+- `paraphrase_no_overlap` — 12 store/probe pairs where the query shares **no
+  token** with the fact's keyword, its `KEY_ALIASES` expansion, or its value.
+  Lexical BM25 cannot bridge these: cyrrus and `bm25_all` score 0 (known-weak);
+  the recency/dump strategies "win" only because they inject everything.
+- `near_dup_30` — 30 near-duplicate facts about *other* cities/pets/jobs compete
+  with the user's three real facts; the real ones must still be selected.
+- `correction_different_key` — "I no longer like pizza" stored under a NEW
+  keyword: same-key supersession does not retire the old preference, so the
+  stale fact remains injectable. Currently known-weak for every system.
 
 ## How to add a scenario
 
@@ -88,9 +115,14 @@ Guidelines:
 - Keep it deterministic: draw any filler from the passed-in `rng`
   (`random.Random(SEED)`); never use time, randomness, or the network directly.
 - Choose probe queries whose words match the fact's keyword or its alias set in
-  `cyrrus/bm25.py` (`KEY_ALIASES`), otherwise BM25 cannot surface it. Distractor
-  text should deliberately avoid the query terms.
-- Keep the total runtime under ~60s; large `buried_*` scenarios dominate because
-  each stored fact is a separate SQLite write.
+  `cyrrus/bm25.py` (`KEY_ALIASES`) when you want lexical retrieval to have a
+  fair chance; for paraphrase-style scenarios, verify NO query token overlaps
+  the expanded keyword or the value, and expect a `[known-weak]` mark.
+  Distractor text should deliberately avoid the query terms.
+- Do not tune scenarios so cyrrus wins. If cyrrus fails a scenario, leave it in
+  and let the `[known-weak]` marking show it.
+- Keep the total runtime sane (~60s today); the `buried_5000` stores and the 50k
+  latency section dominate. `bm25_all` re-ranks the whole log per probe, so
+  large scenarios are the expensive ones.
 - Use a distinct `session` per user when testing isolation; `full_dump` and
   `recent_n` ignore sessions on purpose, which is what surfaces cross-user leaks.
