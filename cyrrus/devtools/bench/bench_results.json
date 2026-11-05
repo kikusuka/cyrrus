@@ -1,0 +1,127 @@
+{
+  "disclaimer": "Measures injection quality (which stored facts enter the context), NOT model answer quality. No LLM is called.",
+  "seed": 1234,
+  "max_facts": 5,
+  "elapsed_s": 11.2,
+  "results": {
+    "updated_fact": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 6.0
+      },
+      "recent_n": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 6.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      }
+    },
+    "buried_50": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 403.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 40.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      }
+    },
+    "buried_500": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 4003.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 40.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      }
+    },
+    "buried_5000": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 40003.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 40.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      }
+    },
+    "topic_switch": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 6.0
+      },
+      "recent_n": {
+        "recall": 1.0,
+        "stale_leak": 1,
+        "injected_tokens": 6.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 3.0
+      }
+    },
+    "preference_recall": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 164.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 40.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 4.0
+      }
+    },
+    "multi_user": {
+      "full_dump": {
+        "recall": 1.0,
+        "stale_leak": 2,
+        "injected_tokens": 60.0
+      },
+      "recent_n": {
+        "recall": 0.0,
+        "stale_leak": 0,
+        "injected_tokens": 40.0
+      },
+      "cyrrus": {
+        "recall": 1.0,
+        "stale_leak": 0,
+        "injected_tokens": 6.0
+      }
+    }
+  }
+}
