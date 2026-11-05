@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import re
 import sqlite3
 import sys
 import threading
@@ -20,8 +21,9 @@ async def _llm(messages):
     return "unused"
 
 
-def _projector(tmp_path, **kwargs):
-    return Projector(
+def _projector(tmp_path, projector_cls=Projector, **kwargs):
+    """Projector for gateway tests; ``projector_cls`` lets a test wrap record_turn."""
+    return projector_cls(
         {"core_lamp": {"content": "Be concise."}, "weather": {"content": "Weather slide.", "triggers": ["weather"]}},
         _llm, memory_db_path=str(tmp_path / "memory.sqlite"), **kwargs
     )
@@ -935,6 +937,180 @@ def test_gateway_close_with_failing_extractor_drains_fast_and_cleanly(tmp_path, 
                     if len(projector._histories.get(s) or ()) == 2]
         assert len(recorded) == n, "turn(s) lost with a failing extractor: %s" % recorded
     finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 follow-up (b) — the accounting contract, with no timing dependence: when the
+# drain is forced to stop, recorded + logged_unrecorded has to equal delivered, i.e.
+# every served turn is either in the record or named in the log. Never a silent loss.
+# --------------------------------------------------------------------------- #
+class _GatedRecordProjector(Projector):
+    """Hold record_turn on a test-controlled gate; the request path is untouched.
+
+    build_context starts its own extraction task, so stored facts alone cannot say
+    whether record_turn ran; the turn's history can. Gating only record_turn makes
+    the drain's pending set an exact number read back from the gateway instead of a
+    race outcome, which is what lets this assert an equation rather than a probability.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.release = threading.Event()
+
+    async def record_turn(self, session_id, user_text, assistant_text):
+        await asyncio.to_thread(self.release.wait)
+        return await super().record_turn(session_id, user_text, assistant_text)
+
+
+_LOSS_LINE = re.compile(
+    r"(\d+) record_turn task\(s\) still queued, (\d+) request\(s\) still in flight, "
+    r"(\d+) turn\(s\) already refused; at least (\d+) served turn\(s\) will not be "
+    r"recorded(?: \[sessions: ([^\]]*)\])?")
+
+
+def _delivered_burst(server, sessions, markers):
+    """One request per session, released together, every response read.
+
+    Returns the (session, marker, status) triples the clients saw.
+    """
+    results, guard = [], threading.Lock()
+    host, port = "127.0.0.1", server.server_address[1]
+    barrier = threading.Barrier(len(sessions), timeout=120)
+
+    def worker(index):
+        session, marker = sessions[index], markers[index]
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                results.append((session, marker, "barrier %r" % exc))
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=60)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": marker}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                results.append((session, marker, response.status))
+        except Exception as exc:  # noqa: BLE001 - reported, not asserted away
+            with guard:
+                results.append((session, marker, "error %r" % exc))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-4)
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(sessions))]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    return results
+
+
+@pytest.mark.parametrize("drain_allowed", [False, True])
+def test_gateway_forced_drain_timeout_accounts_every_served_turn(tmp_path, caplog,
+                                                                  drain_allowed):
+    """recorded + logged_unrecorded == delivered, whichever way the drain ends.
+
+    ``drain_allowed`` picks the two outcomes the contract must cover: a drain given
+    the time it needs (nothing lost, nothing to report) and a drain forced to stop at
+    once (nothing recorded, so all of it must be reported). The gate holds every
+    record_turn pending until ``shutdown_counts()`` says so, so the numbers being
+    compared are set up rather than raced for - the assertions do not depend on how
+    fast anything happens to be.
+    """
+    n = 8
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    sessions = ["acct-%02d" % i for i in range(n)]
+    markers = ["remember marker-%02d" % i for i in range(n)]
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, projector_cls=_GatedRecordProjector,
+                           fact_extractor=_marker_extractor)
+    server = create_server(config, projector=projector, port=0)
+    serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    serve_thread.start()
+    try:
+        results = _delivered_burst(server, sessions, markers)
+        delivered = {session for session, _m, status in results if status == 200}
+        assert len(delivered) == n, results
+
+        # Precondition, not a race: with the gate shut no record can finish, so once
+        # every response has been read the drain is holding exactly n named turns.
+        deadline = time.monotonic() + 30
+        while server.gateway.pending_turns() < n and time.monotonic() < deadline:
+            time.sleep(0.005)
+        queued, in_flight, refused = server.gateway.shutdown_counts()
+        assert (queued, in_flight, refused) == (n, 0, 0), (queued, in_flight, refused)
+
+        if drain_allowed:
+            projector.release.set()
+        loop, loop_thread = server.gateway._loop, server.gateway._loop_thread
+        server.gateway.close(timeout=30.0 if drain_allowed else 0.0)
+
+        recorded = {session for session in delivered
+                    if len(projector._histories.get(session) or ()) == 2}
+        warnings = [r.getMessage() for r in caplog.records]
+        timed_out = [w for w in warnings if "drain timed out" in w]
+        refused_lines = [w for w in warnings if "background work refused" in w]
+        match = _LOSS_LINE.search(timed_out[0]) if timed_out else None
+        logged = int(match.group(4)) if match else 0
+        named = set() if match is None or match.group(5) is None \
+            else {name.strip() for name in match.group(5).split(",")}
+        print("ACCOUNTING leg=%s delivered=%d recorded=%d logged_unrecorded=%d "
+              "named=%d refused_lines=%d drain_timeouts=%d"
+              % ("drain" if drain_allowed else "forced", len(delivered), len(recorded),
+                 logged, len(named), len(refused_lines), len(timed_out)))
+
+        # The contract itself, in both legs: what was served is either in the record
+        # or counted in the log, and the log names each one it counted.
+        assert len(recorded) + logged == len(delivered), (
+            "silent loss: %d recorded + %d logged unrecorded != %d delivered"
+            % (len(recorded), logged, len(delivered)))
+        assert delivered <= recorded | named, "unreported lost turn(s): %s" % sorted(
+            delivered - recorded - named)
+        assert server.gateway.counters.get("record_refused", 0) == 0
+        assert not refused_lines, refused_lines
+
+        if drain_allowed:
+            assert not timed_out, warnings
+            assert logged == 0 and len(recorded) == n, warnings
+            # close() joined the loop thread, so its teardown really finished: the
+            # loop object is closed even though close() had already cleared _loop.
+            assert loop.is_closed(), "loop thread left the event loop open"
+        else:
+            assert len(timed_out) == 1, warnings
+            assert match, timed_out
+            # The warning's own arithmetic has to add up, and the names it lists have
+            # to be the turns it says were given up on - not an unrelated set.
+            assert int(match.group(1)) + int(match.group(3)) == logged, timed_out[0]
+            assert (int(match.group(1)), int(match.group(2)), int(match.group(3))) == (n, 0, 0)
+            assert named == delivered - recorded, sorted(named ^ (delivered - recorded))
+            assert not recorded, sorted(recorded)
+            # Giving up on the drain must still leave a clean loop thread: close()
+            # clears _loop as soon as its join budget expires, so teardown that reads
+            # self._loop would crash with the loop left open.
+            projector.release.set()
+            loop_thread.join(timeout=30)
+            assert not loop_thread.is_alive(), "loop thread never finished teardown"
+            assert loop.is_closed(), "loop thread teardown left the loop open"
+    finally:
+        projector.release.set()   # never leave the drain's threads blocked
         server.shutdown(); server.server_close(); server.gateway.close()
         upstream.shutdown(); upstream.server_close()
 

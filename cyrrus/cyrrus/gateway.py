@@ -92,7 +92,7 @@ class Gateway:
         # those loop-bound locks across loops and failed open under concurrency.
         self._loop = None
         self._loop_thread = None
-        self._bg_futures = set()          # fire-and-forget futures awaiting record_turn
+        self._bg_futures = {}           # future -> session, for fire-and-forget record_turn
         self._turn_windows = 0            # handlers that owe a record_turn (see _reserve_turn)
         # One condition guards all shutdown state: _bg_futures, _turn_windows,
         # _closed and _stopping.  Every decision about "can this turn still be
@@ -114,29 +114,32 @@ class Gateway:
         self._loop = asyncio.new_event_loop()
 
         def _drive():
-            asyncio.set_event_loop(self._loop)
+            # Bind the loop locally: close() clears self._loop as soon as its join
+            # budget expires, and this thread may still be in the teardown below.
+            loop = self._loop
+            asyncio.set_event_loop(loop)
             try:
-                self._loop.run_forever()
+                loop.run_forever()
             finally:
                 # run_forever returned because close() asked it to stop.  Cancel
                 # anything still pending, drain the default executor (used by
                 # asyncio.to_thread in the SQLite backend), then close.
                 try:
-                    pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+                    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                     for task in pending:
                         task.cancel()
                     if pending:
-                        self._loop.run_until_complete(
+                        loop.run_until_complete(
                             asyncio.gather(*pending, return_exceptions=True)
                         )
                 except Exception:  # noqa: BLE001 - shutdown is best-effort
                     pass
                 try:
-                    if hasattr(self._loop, "shutdown_default_executor"):
-                        self._loop.run_until_complete(self._loop.shutdown_default_executor())
+                    if hasattr(loop, "shutdown_default_executor"):
+                        loop.run_until_complete(loop.shutdown_default_executor())
                 except Exception:  # noqa: BLE001
                     pass
-                self._loop.close()
+                loop.close()
 
         self._loop_thread = threading.Thread(target=_drive, name="cyrrus-event-loop", daemon=True)
         self._loop_thread.start()
@@ -223,7 +226,18 @@ class Gateway:
             return (len(self._bg_futures), self._turn_windows,
                     self.counters.get("record_refused", 0))
 
-    def _fire(self, coro):
+    def abandoned_sessions(self):
+        """Sessions whose queued record_turn the drain is about to give up on.
+
+        A count alone cannot prove nothing was lost silently: the operator needs
+        to know which turns to look for.  Only queued work has a name to report —
+        a request still in flight has not been served yet, and a refusal is
+        already logged with its session.
+        """
+        with self._bg_cv:
+            return sorted({session for session in self._bg_futures.values() if session})
+
+    def _fire(self, coro, session=None):
         """Schedule ``coro`` on the persistent loop without blocking the caller.
 
         Used for the post-response record_turn; failures are logged, not raised.
@@ -241,7 +255,7 @@ class Gateway:
             future = None
             if accepted:
                 future = asyncio.run_coroutine_threadsafe(coro, loop)
-                self._bg_futures.add(future)
+                self._bg_futures[future] = session
                 if closing:
                     self._bg_cv.notify_all()
         if future is None:
@@ -252,13 +266,13 @@ class Gateway:
                 self.counters["record_refused"] = self.counters.get("record_refused", 0) + 1
             log.warning(
                 "Cyrrus background work refused: the gateway event loop is shutting down; "
-                "this turn will not be recorded."
+                "this turn will not be recorded.%s" % (" session=%s" % session if session else "")
             )
             return None
 
         def _done(fut):
             with self._bg_cv:
-                self._bg_futures.discard(fut)
+                self._bg_futures.pop(fut, None)
                 self._bg_cv.notify_all()
             try:
                 exc = fut.exception()
@@ -325,7 +339,8 @@ class Gateway:
                     log.warning(
                         "Cyrrus shutdown drain timed out after %ss: %s",
                         budget, _loss_summary(len(self._bg_futures), self._turn_windows,
-                                              self.counters.get("record_refused", 0)))
+                                              self.counters.get("record_refused", 0),
+                                              self.abandoned_sessions()))
                     self._stopping = True
                     break
                 self._bg_cv.wait(remaining)
@@ -614,7 +629,8 @@ def make_handler(gateway):
                     else: assistant = json.loads(decoded)["choices"][0]["message"].get("content", "")
                 except Exception: pass
                 if records_turn:
-                    gateway._fire(gateway.projector.record_turn(session, user_text, assistant))
+                    gateway._fire(gateway.projector.record_turn(session, user_text, assistant),
+                                  session)
                 gateway.add_trace(session, trace, started)
             except (URLError, ValueError) as exc:
                 self._json(502, {"error": {"message": str(exc), "type": "upstream_error"}})
@@ -640,12 +656,22 @@ def create_server(config, projector=None, host=None, port=None, log_prompts=Fals
             port += 1
 
 
-def _loss_summary(queued, in_flight, refused):
+def _loss_summary(queued, in_flight, refused, names=()):
     """One wording for "what a shutdown gave up", shared by the drain timeout and
-    the forced quit so the two can never drift apart."""
-    return ("%d record_turn task(s) still queued, %d request(s) still in flight, "
+    the forced quit so the two can never drift apart.
+
+    ``names`` is capped: a lost turn is listed so it can be found, not so the log
+    can grow with the backlog.
+    """
+    text = ("%d record_turn task(s) still queued, %d request(s) still in flight, "
             "%d turn(s) already refused; at least %d served turn(s) will not be "
             "recorded" % (queued, in_flight, refused, queued + refused))
+    listed = list(names)[:12]
+    if listed:
+        text += " [sessions: %s%s]" % (", ".join(listed),
+                                       ", +%d more" % (len(names) - len(listed))
+                                       if len(names) > len(listed) else "")
+    return text
 
 
 def drain_notice(gateway):
@@ -670,7 +696,7 @@ def forced_quit(gateway, _exit=os._exit):
     """
     queued, in_flight, refused = gateway.shutdown_counts()
     text = "Cyrrus serve: FORCED QUIT (Ctrl+C during drain) - " + _loss_summary(
-        queued, in_flight, refused)
+        queued, in_flight, refused, gateway.abandoned_sessions())
     log.warning(text)
     print(text, flush=True)
     _exit(1)
