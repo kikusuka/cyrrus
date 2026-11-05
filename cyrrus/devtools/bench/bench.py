@@ -194,15 +194,28 @@ def build_scenarios():
                                 forbidden=[]))
         scenarios.append({"name": "buried_%d" % n, "steps": steps})
 
-    # 3. Topic switch: old-topic fact must expire from the injected context.
+    # 3. Topic switch with old-topic expiry. The conversation moves from
+    #    travel planning (topic A) to dinner planning (topic B); after the
+    #    switch a topic-B query must NOT re-inject the stale topic-A facts.
+    #    cyrrus has no temporal/topic expiry -- it is lexical BM25 over all
+    #    active facts -- so any token shared across topics ("plan", "the")
+    #    pulls the old-topic facts back into the context. cyrrus is expected
+    #    to fail here (known-weak, stale_leak > 0); every strategy compared
+    #    fails the same way because none of them model topic expiry.
     scenarios.append({
         "name": "topic_switch",
         "steps": [
-            store_step("s", "user_project", "AlphaApp"),
-            store_step("s", "user_language", "Python"),
-            probe_step("s", "what language do I use?",
-                       need={"user_language": "Python"},
-                       forbidden=[("user_project", "AlphaApp")]),
+            # topic A: travel planning (stale once the conversation moves on)
+            store_step("s", "user_trip", "plan a trip to Rome in May"),
+            store_step("s", "user_hotel", "book a hotel near the Colosseum"),
+            # topic B: dinner planning (where the conversation has moved)
+            store_step("s", "user_dinner", "plan a dinner party on Saturday"),
+            store_step("s", "user_recipe", "cook a lasagna for the party"),
+            probe_step("s", "help me plan the dinner",
+                       need={"user_dinner": "plan a dinner party on Saturday"},
+                       forbidden=[("user_trip", "plan a trip to Rome in May"),
+                                  ("user_hotel",
+                                   "book a hotel near the Colosseum")]),
         ],
     })
 
@@ -267,42 +280,30 @@ def build_scenarios():
         steps.append(probe_step("s", query, need={kw: val}, forbidden=[]))
     scenarios.append({"name": "paraphrase_no_overlap", "steps": steps})
 
-    # 7. Near-duplicate distractors: 30 facts about OTHER cities/pets/jobs
-    #    compete with the user's three real facts. Keyword-alias expansion
-    #    makes distractor documents nearly identical to the real ones for
-    #    pet/city queries; only queries containing a uniquely discriminating
-    #    term ("employer") can separate them.
-    other_cities = ["Madrid", "Berlin", "Vienna", "Dublin", "Oslo",
-                    "Rome", "Athens", "Dubrovnik", "Seville", "Ghent"]
-    other_pets = ["hamster Max", "parrot Kiwi", "rabbit Snow", "goldfinch Pip",
-                  "turtle Shell", "iguana Rex", "ferret Bandit", "goat Basil",
-                  "mouse Squeak", "snake Willow"]
-    other_jobs = ["barista at Nordcoffee", "analyst at DataHive",
-                  "nurse at CityHospital", "pilot at AeroWing",
-                  "teacher at EastHigh", "chef at MaisonRouge",
-                  "clerk at PostOffice", "engineer at BuildRight",
-                  "editor at PressHouse", "trainer at FitZone"]
-    steps = [
-        store_step("s", "user_location", "Lisbon"),
-        store_step("s", "user_pet", "gecko named Ziggy"),
-        store_step("s", "user_employer", "CloudCorp"),
+    # 7. Near-duplicate city distractors (the earlier reported failure): a
+    #    single true fact "I live in Porto" must survive 30 distractor facts
+    #    about OTHER cities that deliberately reuse the live/city/home
+    #    vocabulary, for the question "where do I live?". The distractors use
+    #    plain city_note_* keywords -- none of whose tokens is a KEY_ALIASES
+    #    head -- while the true fact's user_location keyword expands to
+    #    "live living home city ...". Whether that expansion plus the
+    #    first-person "I" in the query is enough to lift the true fact above
+    #    30 look-alikes is the empirical question; the result is reported
+    #    as-is (do not tune cyrrus to win).
+    other_cities = [
+        "Madrid", "Berlin", "Vienna", "Dublin", "Oslo", "Rome", "Athens",
+        "Dubrovnik", "Seville", "Ghent", "Lyon", "Turin", "Valencia",
+        "Krakow", "Riga", "Tallinn", "Bologna", "Florence", "Naples",
+        "Palermo", "Zurich", "Geneva", "Antwerp", "Utrecht", "Salzburg",
+        "Innsbruck", "Nice", "Marseille", "Bilbao", "Copenhagen",
     ]
+    steps = [store_step("s", "user_location", "I live in Porto")]
     for i, c in enumerate(other_cities):
-        steps.append(store_step("s", "city_profile_%02d" % i,
-                                "%s is a metro area with museums" % c))
-    for i, p in enumerate(other_pets):
-        steps.append(store_step("s", "pet_profile_%02d" % i,
-                                "profile of %s kept indoors" % p))
-    for i, j in enumerate(other_jobs):
-        steps.append(store_step("s", "job_posting_%02d" % i,
-                                "opening for %s downtown" % j))
+        steps.append(store_step(
+            "s", "city_note_%02d" % i,
+            "%s is a city where people live and own a home" % c))
     steps.append(probe_step("s", "where do I live?",
-                            need={"user_location": "Lisbon"}, forbidden=[]))
-    steps.append(probe_step("s", "what pet do I have?",
-                            need={"user_pet": "gecko named Ziggy"},
-                            forbidden=[]))
-    steps.append(probe_step("s", "who is my employer?",
-                            need={"user_employer": "CloudCorp"},
+                            need={"user_location": "I live in Porto"},
                             forbidden=[]))
     scenarios.append({"name": "near_dup_30", "steps": steps})
 
@@ -381,8 +382,18 @@ async def run_all():
 
 # --------------------------------------------------------------------------- #
 # Latency: median / p95 / first-call wall time per retrieve at scale.
+#
+# FAIRNESS: every strategy reads from the SAME SQLite store (the bench.db
+# file), not from an in-memory list. cyrrus reads through its own persistent
+# MemoryVault connection (with the cached per-session index); full_dump,
+# recent_n and bm25_all read through one shared read-only connection opened on
+# the same file. This is the honest comparison because cyrrus's real retrieval
+# path is SQLite-backed -- the quality section above can use the in-memory row
+# log because it only measures WHICH facts are injected, not how fast.
+#
 # Facts are bulk-inserted through a second SQLite connection, which also
-# exercises cyrrus's cross-connection staleness detection (PRAGMA data_version).
+# exercises cyrrus's cross-connection staleness detection (PRAGMA data_version)
+# and makes cyrrus's first_call pay the cold index build.
 # --------------------------------------------------------------------------- #
 LAT_QUERIES = [
     "where do I live?",                      # matches one fact (small candidate set)
@@ -391,6 +402,40 @@ LAT_QUERIES = [
     "note record filler unrelated",          # matches MANY notes (very common terms)
     "what is my name?",
 ]
+
+
+def _make_lat_systems(base_conn):
+    """SQLite-backed injection strategies for the latency section.
+
+    All four read the same bench.db file: the three baselines through the
+    shared `base_conn`, cyrrus through its own MemoryVault connection. Each
+    returns a list of (keyword, value) pairs, matching the quality-section
+    inject_* signature so the timing loop is identical.
+    """
+    async def lat_full_dump(store, session, query):
+        rows = base_conn.execute("SELECT keyword, value FROM facts").fetchall()
+        return [(kw, val) for kw, val in rows]
+
+    async def lat_recent_n(store, session, query):
+        rows = base_conn.execute(
+            "SELECT keyword, value FROM facts ORDER BY rowid DESC LIMIT ?",
+            (MAX_FACTS,)).fetchall()
+        return [(kw, val) for kw, val in rows]
+
+    async def lat_bm25_all(store, session, query):
+        rows = base_conn.execute(
+            "SELECT keyword, value, tokens FROM facts WHERE session_id = ?",
+            (session,)).fetchall()
+        ranked = bm25_rank_facts(rows, query, limit=MAX_FACTS,
+                                 score_threshold=0.0)
+        return [(kw, val) for (_s, kw, val, _t) in ranked]
+
+    return {
+        "full_dump": lat_full_dump,
+        "recent_n": lat_recent_n,
+        "bm25_all": lat_bm25_all,
+        "cyrrus": inject_cyrrus,
+    }
 
 
 async def run_latency():
@@ -420,19 +465,23 @@ async def run_latency():
                 rows)
             conn.commit()
             conn.close()
-            for (s, kw, val, _t, _la, _va, _ia) in rows:
-                store.log.append((s, kw, val))
 
-            timings = {name: [] for name in SYSTEMS}
+            # All four strategies read the same SQLite file: baselines via
+            # this shared read connection, cyrrus via its own vault connection.
+            base_conn = sqlite3.connect(store.db_path)
+            lat_systems = _make_lat_systems(base_conn)
+
+            timings = {name: [] for name in lat_systems}
             for p in range(LATENCY_PROBES):
                 q = LAT_QUERIES[p % len(LAT_QUERIES)]
-                for name, inject in SYSTEMS.items():
+                for name, inject in lat_systems.items():
                     t0 = time.perf_counter()
                     await inject(store, "s", q)
                     timings[name].append((time.perf_counter() - t0) * 1000.0)
+            base_conn.close()
 
             out[str(n)] = {}
-            for name in SYSTEMS:
+            for name in lat_systems:
                 ts = sorted(timings[name])
                 p95 = ts[max(0, int(len(ts) * 0.95) - 1)]
                 out[str(n)][name] = {

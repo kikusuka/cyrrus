@@ -37,12 +37,22 @@ what each strategy would inject into the model context:
   (recall < 1.0 or stale_leak > 0). Shown in the table as `[known-weak: ...]`.
 
 The latency section reports **median / p95 / first-call** milliseconds per
-retrieve at 1,000 / 5,000 / 50,000 stored facts for every strategy. Facts are
+retrieve at 1,000 / 5,000 / 50,000 stored facts for every strategy. **All four
+strategies read from the same SQLite store** (the `bench.db` file): cyrrus
+through its own persistent `MemoryVault` connection with a cached per-session
+index, the three baselines through one shared read connection on the same file.
+This is the fair comparison because cyrrus's real retrieval path is
+SQLite-backed. (The *quality* section above instead reads an in-memory row log,
+which is fine there because it only measures *which* facts are injected, not how
+fast — every strategy sees the identical set of stored rows.) Facts are
 bulk-inserted through a second SQLite connection, which also exercises cyrrus's
 cross-connection staleness detection. cyrrus's `first_call` includes the cold
-per-session index build (~2.7s at 50k); warm retrieves reuse the index. Probe
-queries deliberately include high-frequency terms that match most rows, so the
-numbers reflect a near-worst case for the inverted index, not just easy queries.
+per-session index build (~2s at 50k); warm retrieves reuse the index. Note that
+reading from SQLite makes `full_dump`'s true cost visible — fetching every row
+per probe is ~193ms at 50k, not the ~27ms an in-memory list would suggest.
+Probe queries deliberately include high-frequency terms that match most rows, so
+the numbers reflect a near-worst case for the inverted index, not just easy
+queries.
 
 ## Strategies compared
 
@@ -55,23 +65,42 @@ numbers reflect a near-worst case for the inverted index, not just easy queries.
 
 `cyrrus` drives the actual retrieval code `Projector._prepare_turn` uses, so its
 numbers reflect real cyrrus behavior. The baselines are intentionally naive
-strategies that read the same stored row log.
+strategies. In the quality scenarios they read the same in-memory row log cyrrus
+sees (including superseded rows, which is what lets the naive strategies leak
+stale facts); in the latency section all four read the same SQLite store.
 
 ## Scenarios
 
 - `updated_fact` — Porto supersedes Lisbon; the stale value must not leak.
 - `buried_50` / `buried_500` / `buried_5000` — a relevant fact stored first,
   then buried under N unrelated distractors; relevance must beat recency.
-- `topic_switch` — after moving to a new topic, the old-topic fact must not be
-  injected for a new-topic query (ghost/old context expiry).
+- `topic_switch` — a real topic switch: the conversation moves from travel
+  planning (topic A: `plan a trip to Rome`, `book a hotel …`) to dinner planning
+  (topic B: `plan a dinner party …`), then a topic-B query (`help me plan the
+  dinner`) must not re-inject the stale topic-A facts. cyrrus has **no
+  temporal/topic expiry** — it is lexical BM25 over all active facts — so tokens
+  shared across topics (`plan`, `the`) pull the old-topic facts back in. This is
+  `[known-weak]` for cyrrus (stale_leak 2), and *every* strategy fails it the
+  same way; none of them model topic expiry.
 - `preference_recall` — a preference buried under distractors must still surface.
 - `multi_user` — Alice's query must recall Alice's facts and never inject Bob's.
 - `paraphrase_no_overlap` — 12 store/probe pairs where the query shares **no
   token** with the fact's keyword, its `KEY_ALIASES` expansion, or its value.
   Lexical BM25 cannot bridge these: cyrrus and `bm25_all` score 0 (known-weak);
   the recency/dump strategies "win" only because they inject everything.
-- `near_dup_30` — 30 near-duplicate facts about *other* cities/pets/jobs compete
-  with the user's three real facts; the real ones must still be selected.
+- `near_dup_30` — a single true fact `user_location = "I live in Porto"` must
+  survive 30 distractor facts about *other* cities that deliberately reuse the
+  `live`/`city`/`home` vocabulary (`"<city> is a city where people live and own
+  a home"`), for the question `where do I live?`. **cyrrus passes this as
+  specified** — and we report that plainly rather than dressing it up as a
+  failure. Two real cyrrus behaviors lift the true fact above the 30 look-alikes:
+  (1) the `user_location` keyword expands via `KEY_ALIASES` to `live living home
+  city …`, while the plain `city_note_*` distractor keywords get no such boost;
+  and (2) the query's first-person `I` matches only the true fact (high IDF).
+  `recent_n` fails it (recall 0) because Porto is stored first and then buried
+  under the 30 cities. This scenario is the faithful rewrite of the earlier
+  near-duplicate report; the earlier failure is **not** reproduced under this
+  exact spec, and that is stated rather than hidden.
 - `correction_different_key` — "I no longer like pizza" stored under a NEW
   keyword: same-key supersession does not retire the old preference, so the
   stale fact remains injectable. Currently known-weak for every system.
