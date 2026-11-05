@@ -2,28 +2,36 @@
   "disclaimer": "Measures injection quality (which stored facts enter the context), NOT model answer quality. No LLM is called. This harness is written and maintained by the same team as the cyrrus fixes it compares against -- treat cross-system numbers with that bias in mind.",
   "seed": 1234,
   "max_facts": 5,
-  "elapsed_s": 36.94,
+  "elapsed_s": 39.9,
   "results": {
     "updated_fact": {
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 6.0
+        "injected_tokens": 6.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "recent_n": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 6.0
+        "injected_tokens": 6.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 6.0
+        "injected_tokens": 6.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "known_weak": []
     },
@@ -31,22 +39,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 403.0
+        "injected_tokens": 403.0,
+        "distractor_rate": 0.98,
+        "injected_facts": 51.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 40.0
+        "injected_tokens": 40.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "known_weak": []
     },
@@ -54,22 +70,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 4003.0
+        "injected_tokens": 4003.0,
+        "distractor_rate": 0.998,
+        "injected_facts": 501.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 40.0
+        "injected_tokens": 40.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "known_weak": []
     },
@@ -77,22 +101,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 40003.0
+        "injected_tokens": 40003.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5001.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 40.0
+        "injected_tokens": 40.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 3.0
+        "injected_tokens": 3.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "known_weak": []
     },
@@ -100,22 +132,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 2,
-        "injected_tokens": 33.0
+        "injected_tokens": 33.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 4.0
       },
       "recent_n": {
         "recall": 1.0,
         "stale_leak": 2,
-        "injected_tokens": 33.0
+        "injected_tokens": 33.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 4.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 2,
-        "injected_tokens": 33.0
+        "injected_tokens": 33.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 4.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 2,
-        "injected_tokens": 33.0
+        "injected_tokens": 33.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 4.0
       },
       "known_weak": [
         "stale_leak 2 > 0"
@@ -125,22 +165,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 164.0
+        "injected_tokens": 164.0,
+        "distractor_rate": 0.952,
+        "injected_facts": 21.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 40.0
+        "injected_tokens": 40.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 4.0
+        "injected_tokens": 4.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 4.0
+        "injected_tokens": 4.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 1.0
       },
       "known_weak": []
     },
@@ -148,22 +196,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 2,
-        "injected_tokens": 60.0
+        "injected_tokens": 60.0,
+        "distractor_rate": 0.6,
+        "injected_facts": 10.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 40.0
+        "injected_tokens": 40.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 6.0
+        "injected_tokens": 6.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 6.0
+        "injected_tokens": 6.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "known_weak": []
     },
@@ -171,22 +227,30 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 25.8
+        "injected_tokens": 25.8,
+        "distractor_rate": 0.0,
+        "injected_facts": 6.5
       },
       "recent_n": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 16.8
+        "injected_tokens": 16.8,
+        "distractor_rate": 0.0,
+        "injected_facts": 4.2
       },
       "bm25_all": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 0.0
+        "injected_tokens": 0.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 0.0
       },
       "cyrrus": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 0.0
+        "injected_tokens": 0.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 0.0
       },
       "known_weak": [
         "recall 0.000 < 1.0"
@@ -196,45 +260,63 @@
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 426.0
+        "injected_tokens": 440.0,
+        "distractor_rate": 0.968,
+        "injected_facts": 31.0
       },
       "recent_n": {
         "recall": 0.0,
         "stale_leak": 0,
-        "injected_tokens": 70.0
+        "injected_tokens": 72.0,
+        "distractor_rate": 1.0,
+        "injected_facts": 5.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 62.0
+        "injected_tokens": 63.3,
+        "distractor_rate": 0.8,
+        "injected_facts": 5.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 0,
-        "injected_tokens": 62.0
+        "injected_tokens": 63.3,
+        "distractor_rate": 0.8,
+        "injected_facts": 5.0
       },
-      "known_weak": []
+      "known_weak": [
+        "distractor_rate 0.800 >= 0.50 (context mostly noise)"
+      ]
     },
     "correction_different_key": {
       "full_dump": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 11.0
+        "injected_tokens": 11.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "recent_n": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 11.0
+        "injected_tokens": 11.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "bm25_all": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 11.0
+        "injected_tokens": 11.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "cyrrus": {
         "recall": 1.0,
         "stale_leak": 1,
-        "injected_tokens": 11.0
+        "injected_tokens": 11.0,
+        "distractor_rate": 0.0,
+        "injected_facts": 2.0
       },
       "known_weak": [
         "stale_leak 1 > 0"
@@ -244,79 +326,79 @@
   "latency_ms": {
     "1000": {
       "full_dump": {
-        "median_ms": 3.11,
-        "p95_ms": 5.62,
-        "first_call_ms": 19.49,
+        "median_ms": 3.56,
+        "p95_ms": 5.58,
+        "first_call_ms": 17.65,
         "probes": 10
       },
       "recent_n": {
-        "median_ms": 0.12,
-        "p95_ms": 0.18,
-        "first_call_ms": 0.21,
+        "median_ms": 0.14,
+        "p95_ms": 0.17,
+        "first_call_ms": 0.11,
         "probes": 10
       },
       "bm25_all": {
-        "median_ms": 33.6,
-        "p95_ms": 40.58,
-        "first_call_ms": 22.8,
+        "median_ms": 47.81,
+        "p95_ms": 63.8,
+        "first_call_ms": 27.62,
         "probes": 10
       },
       "cyrrus": {
-        "median_ms": 3.59,
-        "p95_ms": 8.61,
-        "first_call_ms": 31.7,
+        "median_ms": 7.9,
+        "p95_ms": 13.69,
+        "first_call_ms": 34.07,
         "probes": 10
       }
     },
     "5000": {
       "full_dump": {
-        "median_ms": 15.05,
-        "p95_ms": 17.42,
-        "first_call_ms": 30.68,
+        "median_ms": 14.92,
+        "p95_ms": 16.77,
+        "first_call_ms": 71.45,
         "probes": 10
       },
       "recent_n": {
-        "median_ms": 0.15,
-        "p95_ms": 0.21,
-        "first_call_ms": 0.14,
+        "median_ms": 0.14,
+        "p95_ms": 0.22,
+        "first_call_ms": 0.22,
         "probes": 10
       },
       "bm25_all": {
-        "median_ms": 185.19,
-        "p95_ms": 218.14,
-        "first_call_ms": 151.74,
+        "median_ms": 178.15,
+        "p95_ms": 202.65,
+        "first_call_ms": 523.51,
         "probes": 10
       },
       "cyrrus": {
-        "median_ms": 16.88,
-        "p95_ms": 33.4,
-        "first_call_ms": 166.84,
+        "median_ms": 20.51,
+        "p95_ms": 31.32,
+        "first_call_ms": 207.33,
         "probes": 10
       }
     },
     "50000": {
       "full_dump": {
-        "median_ms": 180.42,
-        "p95_ms": 327.17,
-        "first_call_ms": 203.02,
+        "median_ms": 169.4,
+        "p95_ms": 203.45,
+        "first_call_ms": 178.0,
         "probes": 10
       },
       "recent_n": {
-        "median_ms": 0.18,
-        "p95_ms": 0.35,
-        "first_call_ms": 0.19,
+        "median_ms": 0.16,
+        "p95_ms": 0.23,
+        "first_call_ms": 0.23,
         "probes": 10
       },
       "bm25_all": {
-        "median_ms": 1889.04,
-        "p95_ms": 2188.06,
-        "first_call_ms": 1772.16,
+        "median_ms": 2049.96,
+        "p95_ms": 2162.62,
+        "first_call_ms": 1938.68,
         "probes": 10
       },
       "cyrrus": {
-        "median_ms": 250.39,
-        "p95_ms": 400.84,
-        "first_call_ms": 1966.55,
+        "median_ms": 184.48,
+        "p95_ms": 299.24,
+        "first_call_ms": 2095.47,
         "probes": 10
       }
     }

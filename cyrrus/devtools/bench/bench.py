@@ -33,6 +33,13 @@ Metrics (aggregated per scenario):
                      superseded values, expired old-topic facts, or another
                      user's facts. Lower is better (0 = clean).
   injected_tokens -- mean injected fact tokens per probe. Lower is better.
+  injected_facts  -- mean NUMBER of facts injected per probe (how much of the
+                     context budget was actually spent).
+  distractor_rate -- mean share of the injected facts that are KNOWN planted
+                     noise (filler notes / near-duplicate look-alikes), per
+                     probe. Precision, not recall: a probe can reach recall 1.0
+                     while filling most of its budget with distractors. Lower is
+                     better; cyrrus at/above DISTRACTOR_WEAK is marked known-weak.
 
 A separate latency section reports median / p95 / first-call wall time per
 retrieve at 1k / 5k / 50k stored facts for every strategy.
@@ -69,6 +76,7 @@ from cyrrus.memory import MemoryVault  # noqa: E402
 
 SEED = 1234
 MAX_FACTS = 5          # injection budget for recent_n, bm25_all and cyrrus
+DISTRACTOR_WEAK = 0.5  # cyrrus distractor_rate at/above this = known-weak (poor precision)
 DISTRACTOR_SIZES = [50, 500, 5000]
 LATENCY_SIZES = [1000, 5000, 50000]
 LATENCY_PROBES = 10
@@ -151,22 +159,31 @@ def store_step(session, keyword, value):
     return {"op": "store", "session": session, "keyword": keyword, "value": value}
 
 
-def probe_step(session, query, need, forbidden):
-    # need: {keyword: expected_value}; forbidden: [(keyword, value), ...]
+def probe_step(session, query, need, forbidden, distractors=()):
+    # need: {keyword: expected_value}; forbidden: [(keyword, value), ...];
+    # distractors: iterable of keywords planted as KNOWN noise for this probe,
+    # used to compute distractor_rate (share of injected facts that are noise).
     return {"op": "probe", "session": session, "query": query,
-            "need": need, "forbidden": forbidden}
+            "need": need, "forbidden": forbidden,
+            "distractors": frozenset(distractors)}
 
 
 def distractors(session, n, rng):
-    """n filler facts that intentionally do NOT match benchmark queries."""
+    """n filler facts that intentionally do NOT match benchmark queries.
+
+    Returns (steps, keyword_set) so the probe can score distractor_rate.
+    """
     topics = ["weather", "traffic", "groceries", "calendar", "hardware",
               "shipping", "invoice", "meeting", "backup", "release"]
     steps = []
+    kws = []
     for i in range(n):
         t = topics[rng.randrange(len(topics))]
-        steps.append(store_step(session, "note_%05d" % i,
+        kw = "note_%05d" % i
+        steps.append(store_step(session, kw,
                                 "unrelated filler record %d about %s" % (i, t)))
-    return steps
+        kws.append(kw)
+    return steps, kws
 
 
 def build_scenarios():
@@ -188,10 +205,11 @@ def build_scenarios():
     # 2. Buried old fact among N distractors (relevance vs recency).
     for n in DISTRACTOR_SIZES:
         steps = [store_step("s", "user_location", "Lisbon")]
-        steps += distractors("s", n, rng)
+        fill, fill_kws = distractors("s", n, rng)
+        steps += fill
         steps.append(probe_step("s", "where do I live?",
                                 need={"user_location": "Lisbon"},
-                                forbidden=[]))
+                                forbidden=[], distractors=fill_kws))
         scenarios.append({"name": "buried_%d" % n, "steps": steps})
 
     # 3. Topic switch with old-topic expiry. The conversation moves from
@@ -221,10 +239,11 @@ def build_scenarios():
 
     # 4. Preference recall with the preference buried under distractors.
     steps = [store_step("s", "user_preference", "dark mode")]
-    steps += distractors("s", 20, rng)
+    fill, fill_kws = distractors("s", 20, rng)
+    steps += fill
     steps.append(probe_step("s", "what do I prefer?",
                             need={"user_preference": "dark mode"},
-                            forbidden=[]))
+                            forbidden=[], distractors=fill_kws))
     scenarios.append({"name": "preference_recall", "steps": steps})
 
     # 5. Multiple users: no cross-user leakage. Alice's facts must be recalled
@@ -235,11 +254,13 @@ def build_scenarios():
         store_step("bob", "user_name", "Bob"),
         store_step("bob", "user_city", "Berlin"),
     ]
-    steps += distractors("bob", 6, rng)  # push Alice out of the recent window
+    fill, fill_kws = distractors("bob", 6, rng)  # push Alice out of the recent window
+    steps += fill
     steps.append(probe_step("alice", "what is my name and city?",
                             need={"user_name": "Alice", "user_city": "Paris"},
                             forbidden=[("user_name", "Bob"),
-                                       ("user_city", "Berlin")]))
+                                       ("user_city", "Berlin")],
+                            distractors=fill_kws))
     scenarios.append({"name": "multi_user", "steps": steps})
 
     # 6. Paraphrase: queries deliberately share NO token with the stored
@@ -280,16 +301,20 @@ def build_scenarios():
         steps.append(probe_step("s", query, need={kw: val}, forbidden=[]))
     scenarios.append({"name": "paraphrase_no_overlap", "steps": steps})
 
-    # 7. Near-duplicate city distractors (the earlier reported failure): a
-    #    single true fact "I live in Porto" must survive 30 distractor facts
-    #    about OTHER cities that deliberately reuse the live/city/home
-    #    vocabulary, for the question "where do I live?". The distractors use
-    #    plain city_note_* keywords -- none of whose tokens is a KEY_ALIASES
-    #    head -- while the true fact's user_location keyword expands to
-    #    "live living home city ...". Whether that expansion plus the
-    #    first-person "I" in the query is enough to lift the true fact above
-    #    30 look-alikes is the empirical question; the result is reported
-    #    as-is (do not tune cyrrus to win).
+    # 7. Near-duplicate city look-alikes (the earlier reported failure). A single
+    #    true fact "I live in Porto" (keyword user_location, whose KEY_ALIASES
+    #    head "location" expands to live/home/city/from/based/residence) must be
+    #    the top hit for three paraphrases of the same need, against 30 competing
+    #    look-alike facts about OTHER cities. Each look-alike sits under a
+    #    topically city/home-flavoured key (user_hometown / user_birthplace /
+    #    user_previous_city / user_work_city, cycled) and its VALUE reuses the
+    #    live/city/home vocabulary, so it lexically crowds the true fact. A unique
+    #    city slug keeps every look-alike simultaneously active (supersession is
+    #    per (session, keyword)), so all 30 are genuinely rankable. These distractor
+    #    keys are NOT token-boosted by KEY_ALIASES (only "location" is), so this
+    #    is not rigged in cyrrus's favour: the query "where am I based" leans on
+    #    the "based" alias the true fact uniquely carries. The distractor_rate and
+    #    per-query recall are reported as measured -- cyrrus is NOT tuned to win.
     other_cities = [
         "Madrid", "Berlin", "Vienna", "Dublin", "Oslo", "Rome", "Athens",
         "Dubrovnik", "Seville", "Ghent", "Lyon", "Turin", "Valencia",
@@ -297,14 +322,22 @@ def build_scenarios():
         "Palermo", "Zurich", "Geneva", "Antwerp", "Utrecht", "Salzburg",
         "Innsbruck", "Nice", "Marseille", "Bilbao", "Copenhagen",
     ]
+    look_alike_keys = [
+        "user_hometown", "user_birthplace", "user_previous_city", "user_work_city",
+    ]
     steps = [store_step("s", "user_location", "I live in Porto")]
+    la_kws = []
     for i, c in enumerate(other_cities):
+        fam = look_alike_keys[i % len(look_alike_keys)]
+        kw = "%s_%s" % (fam, c.lower())
         steps.append(store_step(
-            "s", "city_note_%02d" % i,
+            "s", kw,
             "%s is a city where people live and own a home" % c))
-    steps.append(probe_step("s", "where do I live?",
-                            need={"user_location": "I live in Porto"},
-                            forbidden=[]))
+        la_kws.append(kw)
+    for q in ("where do I live", "which city am I in", "where am I based"):
+        steps.append(probe_step("s", q,
+                                need={"user_location": "I live in Porto"},
+                                forbidden=[], distractors=la_kws))
     scenarios.append({"name": "near_dup_30", "steps": steps})
 
     # 8. Different-key correction: "I no longer like pizza" gets stored under
@@ -329,7 +362,7 @@ def build_scenarios():
 # --------------------------------------------------------------------------- #
 # Evaluation
 # --------------------------------------------------------------------------- #
-def score_probe(injected, need, forbidden):
+def score_probe(injected, need, forbidden, distractors=frozenset()):
     injected_set = set(injected)
     if need:
         found = sum(1 for kv in need.items() if kv in injected_set)
@@ -338,14 +371,22 @@ def score_probe(injected, need, forbidden):
         recall = 1.0
     stale_leak = sum(1 for kv in forbidden if kv in injected_set)
     tokens = sum(fact_tokens(kw, val) for kw, val in injected)
-    return recall, stale_leak, tokens
+    # distractor_rate: share of the injected facts that are KNOWN planted noise.
+    # Precision, not recall: a probe can hit recall 1.0 yet fill most of its
+    # context budget with distractors. 0.0 when nothing was injected.
+    injected_count = len(injected)
+    distractor_hits = sum(1 for kw, _val in injected if kw in distractors)
+    distractor_rate = (distractor_hits / injected_count
+                       if injected_count else 0.0)
+    return recall, stale_leak, tokens, distractor_rate, injected_count
 
 
 async def run_scenario(scenario):
     db_dir = tempfile.mkdtemp(prefix="cyrrus_bench_")
     try:
         store = FactStore(db_dir)
-        acc = {name: {"recall": [], "stale_leak": 0, "tokens": []}
+        acc = {name: {"recall": [], "stale_leak": 0, "tokens": [],
+                      "distractor_rate": [], "injected_count": []}
                for name in SYSTEMS}
         for step in scenario["steps"]:
             if step["op"] == "store":
@@ -353,19 +394,26 @@ async def run_scenario(scenario):
             elif step["op"] == "probe":
                 for name, inject in SYSTEMS.items():
                     injected = await inject(store, step["session"], step["query"])
-                    r, leak, tok = score_probe(injected, step["need"],
-                                               step["forbidden"])
+                    r, leak, tok, drate, icount = score_probe(
+                        injected, step["need"], step["forbidden"],
+                        step.get("distractors", frozenset()))
                     acc[name]["recall"].append(r)
                     acc[name]["stale_leak"] += leak
                     acc[name]["tokens"].append(tok)
+                    acc[name]["distractor_rate"].append(drate)
+                    acc[name]["injected_count"].append(icount)
         result = {}
         for name in SYSTEMS:
             recalls = acc[name]["recall"] or [0.0]
             toks = acc[name]["tokens"] or [0]
+            drates = acc[name]["distractor_rate"] or [0.0]
+            counts = acc[name]["injected_count"] or [0]
             result[name] = {
                 "recall": round(sum(recalls) / len(recalls), 3),
                 "stale_leak": acc[name]["stale_leak"],
                 "injected_tokens": round(sum(toks) / len(toks), 1),
+                "distractor_rate": round(sum(drates) / len(drates), 3),
+                "injected_facts": round(sum(counts) / len(counts), 1),
             }
         return result
     finally:
@@ -503,6 +551,9 @@ def known_weak_reasons(systems):
         reasons.append("recall %.3f < 1.0" % c["recall"])
     if c["stale_leak"] > 0:
         reasons.append("stale_leak %d > 0" % c["stale_leak"])
+    if c["distractor_rate"] >= DISTRACTOR_WEAK:
+        reasons.append("distractor_rate %.3f >= %.2f (context mostly noise)"
+                       % (c["distractor_rate"], DISTRACTOR_WEAK))
     return reasons
 
 
@@ -526,21 +577,27 @@ def to_markdown(results, latency):
     lines.append("recall: higher is better (1.0 = every needed fact injected). "
                  "stale_leak: lower is better (0 = no superseded/expired/"
                  "cross-user facts). injected_tokens: mean per probe, lower is "
-                 "better. Budget for recent_n, bm25_all and cyrrus = %d facts. "
+                 "better. injected_facts: mean number of facts injected per "
+                 "probe (the context size actually spent). distractor_rate: mean "
+                 "share of those injected facts that are KNOWN planted noise "
+                 "(0.0 = clean precision, 1.0 = context is all noise) -- lower "
+                 "is better; a probe can hit recall 1.0 yet pollute its budget. "
+                 "Budget for recent_n, bm25_all and cyrrus = %d facts. "
                  "[known-weak] marks scenarios cyrrus currently fails "
-                 "(recall < 1.0 or stale_leak > 0); they are shown, not hidden."
-                 % MAX_FACTS)
+                 "(recall < 1.0, stale_leak > 0, or distractor_rate >= %.2f); "
+                 "they are shown, not hidden."
+                 % (MAX_FACTS, DISTRACTOR_WEAK))
     lines.append("")
-    lines.append("| scenario | system | recall | stale_leak | injected_tokens |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| scenario | system | recall | stale_leak | injected_tokens | injected_facts | distractor_rate |")
+    lines.append("|---|---|---|---|---|---|---|")
     for sc_name, systems in results.items():
         weak = systems.get("known_weak", [])
         label = sc_name + (" [known-weak: %s]" % "; ".join(weak) if weak else "")
         for sys_name in SYSTEM_ORDER:
             m = systems[sys_name]
-            lines.append("| %s | %s | %.3f | %d | %.1f |" % (
+            lines.append("| %s | %s | %.3f | %d | %.1f | %.1f | %.3f |" % (
                 label, sys_name, m["recall"], m["stale_leak"],
-                m["injected_tokens"]))
+                m["injected_tokens"], m["injected_facts"], m["distractor_rate"]))
     lines.append("")
     lines.append("## Latency (ms per retrieve, %d probes each; first_call includes cold index build for cyrrus)" % LATENCY_PROBES)
     lines.append("")

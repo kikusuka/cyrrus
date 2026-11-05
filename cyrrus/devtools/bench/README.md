@@ -33,8 +33,21 @@ what each strategy would inject into the model context:
   scenario's probes: superseded values, expired old-topic facts, or another
   user's facts. Lower is better (0 = clean).
 - **injected_tokens** — mean injected fact tokens per probe. Lower is better.
+- **injected_facts** — mean NUMBER of facts injected per probe, i.e. how much of
+  the `MAX_FACTS` context budget was actually spent.
+- **distractor_rate** — mean **share of the injected facts that are KNOWN planted
+  noise** for each probe (the filler notes / near-duplicate look-alikes the
+  scenario deliberately stores). This is a *precision* measure, orthogonal to
+  recall: a probe can reach **recall 1.0** — the needed fact is present — while
+  the rest of its budget is filled with distractors. Computed per probe as
+  (injected facts whose keyword is a planted distractor) / (injected facts),
+  0.0 when nothing was injected. Lower is better. `near_dup_30` is the case this
+  exists for: recall alone said cyrrus "passed"; distractor_rate shows it mostly
+  padded the context with look-alike cities.
 - **known_weak** — list of reasons cyrrus currently fails the scenario
-  (recall < 1.0 or stale_leak > 0). Shown in the table as `[known-weak: ...]`.
+  (recall < 1.0, stale_leak > 0, **or distractor_rate >= `DISTRACTOR_WEAK`
+  (0.50)** — i.e. at least half the injected facts are known noise). Shown in the
+  table as `[known-weak: ...]`.
 
 The latency section reports **median / p95 / first-call** milliseconds per
 retrieve at 1,000 / 5,000 / 50,000 stored facts for every strategy. **All four
@@ -89,18 +102,24 @@ stale facts); in the latency section all four read the same SQLite store.
   Lexical BM25 cannot bridge these: cyrrus and `bm25_all` score 0 (known-weak);
   the recency/dump strategies "win" only because they inject everything.
 - `near_dup_30` — a single true fact `user_location = "I live in Porto"` must
-  survive 30 distractor facts about *other* cities that deliberately reuse the
-  `live`/`city`/`home` vocabulary (`"<city> is a city where people live and own
-  a home"`), for the question `where do I live?`. **cyrrus passes this as
-  specified** — and we report that plainly rather than dressing it up as a
-  failure. Two real cyrrus behaviors lift the true fact above the 30 look-alikes:
-  (1) the `user_location` keyword expands via `KEY_ALIASES` to `live living home
-  city …`, while the plain `city_note_*` distractor keywords get no such boost;
-  and (2) the query's first-person `I` matches only the true fact (high IDF).
-  `recent_n` fails it (recall 0) because Porto is stored first and then buried
-  under the 30 cities. This scenario is the faithful rewrite of the earlier
-  near-duplicate report; the earlier failure is **not** reproduced under this
-  exact spec, and that is stated rather than hidden.
+  surface for three paraphrases of the same need (`where do I live`, `which city
+  am I in`, `where am I based`) against **30 competing look-alike facts** about
+  *other* cities. Each look-alike is stored under a topically city/home-flavoured
+  key cycling through `user_hometown` / `user_birthplace` / `user_previous_city` /
+  `user_work_city` (disambiguated with a per-city slug so all 30 stay simultaneously
+  active — supersession is per `(session, keyword)`), and its **value** reuses the
+  `live`/`city`/`home` vocabulary (`"<city> is a city where people live and own a
+  home"`), so it lexically crowds the true fact.
+  What `distractor_rate` reveals here, which recall alone hid: cyrrus reaches
+  **recall 1.0** (the Porto fact is present for every query — `user_location`'s
+  `location` alias head `live … city … based` and the query's first-person `I` lift
+  it in), but it marks the scenario **`[known-weak]` on precision**: measured
+  `distractor_rate = 0.800`, i.e. 4 of the 5 injected facts are look-alike cities.
+  `bm25_all` scores the same; `recent_n` fails outright (recall 0 — Porto stored
+  first, then buried). The distractor keys are **not** token-boosted by `KEY_ALIASES`
+  (only the head `location` is), so this is not rigged for or against cyrrus —
+  `where am I based` in particular leans on the `based` alias the true fact
+  uniquely carries. Numbers are reported as measured; cyrrus is not tuned to win.
 - `correction_different_key` — "I no longer like pizza" stored under a NEW
   keyword: same-key supersession does not retire the old preference, so the
   stale fact remains injectable. Currently known-weak for every system.
@@ -111,8 +130,9 @@ Edit `build_scenarios()` in `bench.py`. A scenario is a dict with a `name` and a
 list of `steps`. Steps are built with two helpers:
 
 ```python
-store_step(session, keyword, value)          # store/supersede a fact
-probe_step(session, query, need, forbidden)  # evaluate injection for a query
+store_step(session, keyword, value)                     # store/supersede a fact
+probe_step(session, query, need, forbidden, distractors)  # evaluate one query
+distractors(session, n, rng) -> (steps, keyword_list)   # n planted noise facts
 ```
 
 - `need` is a `{keyword: expected_value}` dict — every pair must be injected for
@@ -120,6 +140,9 @@ probe_step(session, query, need, forbidden)  # evaluate injection for a query
 - `forbidden` is a list of `(keyword, value)` pairs that must **not** be
   injected (superseded values, expired topics, other users' facts). Each
   forbidden pair that shows up counts as one `stale_leak`.
+- `distractors` is the list of keywords returned by `distractors(...)` (or a
+  hand-built list, as in `near_dup_30`) naming the KNOWN noise for that probe;
+  it drives `distractor_rate`. Pass `[]` when the scenario has no planted noise.
 
 Example — add a hobby fact buried under 30 distractors:
 
@@ -129,11 +152,13 @@ def build_scenarios():
     scenarios = [ ... ]  # existing scenarios
 
     steps = [store_step("s", "user_hobby", "woodworking")]
-    steps += distractors("s", 30, rng)
+    fill, fill_kws = distractors("s", 30, rng)
+    steps += fill
     steps.append(probe_step(
         "s", "what is my hobby?",
         need={"user_hobby": "woodworking"},
         forbidden=[],
+        distractors=fill_kws,
     ))
     scenarios.append({"name": "buried_hobby", "steps": steps})
     return scenarios
