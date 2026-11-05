@@ -436,15 +436,15 @@ class SQLiteBackend(MemoryBackend):
                 [(now, session_id, kw) for kw in keywords],
             )
             conn.commit()
-            # touch() changes only recency metadata, not index content, so
-            # refresh the cached data_version instead of invalidating (our
-            # own commit would otherwise look like an external write).
-            with self._index_lock:
-                entry = self._indexes.get(session_id)
-                if entry is not None:
-                    entry["data_version"] = conn.execute(
-                        "PRAGMA data_version"
-                    ).fetchone()[0]
+            # Do NOT advance the cached data_version stamp here. A connection's
+            # own commit never bumps its own data_version (only another
+            # connection's commit does), so the build-time stamp stays valid
+            # across touch when nothing external changed -- and when something
+            # DID change externally, leaving the stamp alone forces the next
+            # retrieve_ranked to rebuild and observe it. The old behaviour
+            # re-stamped the post-commit data_version onto the cached index,
+            # which absorbed a concurrent external supersede without a rebuild
+            # and pinned retrieval to the stale value (P0).
 
         await self._execute_with_retry(_touch)
     
