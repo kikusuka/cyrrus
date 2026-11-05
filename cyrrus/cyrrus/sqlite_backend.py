@@ -337,18 +337,28 @@ class SQLiteBackend(MemoryBackend):
         
         await self._execute_with_retry(_upsert)
     
-    async def retrieve_current(self, session_id: str, limit: int = 100) -> List[tuple]:
-        """Retrieve current facts for a session (invalid_at IS NULL)."""
+    async def retrieve_current(self, session_id: str, limit: Optional[int] = 100) -> List[tuple]:
+        """Retrieve current facts for a session (invalid_at IS NULL).
+
+        limit=None returns every active fact so callers that rank by relevance
+        (BM25) can consider the whole set rather than only the most-recently
+        -accessed rows. An integer limit keeps the recency-bounded behavior.
+        """
         validate_session_id(session_id)
 
         def _retrieve(conn):
-            results = conn.execute(
+            if limit is None:
+                return conn.execute(
+                    "SELECT keyword, value, tokens FROM facts "
+                    "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC",
+                    (session_id,),
+                ).fetchall()
+            return conn.execute(
                 "SELECT keyword, value, tokens FROM facts "
                 "WHERE session_id=? AND invalid_at IS NULL ORDER BY last_accessed DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
-            return results
-        
+
         return await self._execute_with_retry(_retrieve)
     
     async def touch(self, session_id: str, keywords: List[str]) -> None:

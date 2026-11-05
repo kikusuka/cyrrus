@@ -84,13 +84,14 @@ class MemoryBackend(ABC):
         pass
     
     @abstractmethod
-    async def retrieve_current(self, session_id: str, limit: int = 100) -> List[tuple]:
+    async def retrieve_current(self, session_id: str, limit: Optional[int] = 100) -> List[tuple]:
         """
         Retrieve current facts for a session (invalid_at IS NULL).
         
         Args:
             session_id: The session identifier
-            limit: Maximum number of facts to retrieve
+            limit: Maximum number of facts to retrieve. None returns all
+                active facts (for callers that rank the full set by relevance).
             
         Returns:
             List of tuples: (keyword, value, tokens)

@@ -120,7 +120,10 @@ class MemoryVault:
             return []
         validate_session_id(session_id)
         await self._ensure_initialized()
-        rows = await self._backend.retrieve_current(session_id, limit=100)
+        # Fetch every active fact (limit=None) so relevance ranking below sees
+        # the whole set. A recency-bounded fetch would make older facts buried
+        # under newer rows unreachable regardless of how well they match.
+        rows = await self._backend.retrieve_current(session_id, limit=None)
         if not rows:
             return []
 
