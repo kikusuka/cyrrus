@@ -223,6 +223,7 @@ class Projector:
         extractor_mode: str = "replace",
         extractor_timeout: float = 10.0,
         wait_for_extraction: bool = False,
+        flush_timeout: float = 10.0,
         compress_tool_output: bool = False,
         compressor: object = None,
         trace_file: Optional[str] = None,
@@ -259,6 +260,7 @@ class Projector:
         self.extractor_mode = extractor_mode
         self.extractor_timeout = extractor_timeout
         self.wait_for_extraction = wait_for_extraction
+        self.flush_timeout = flush_timeout
         self.compress_tool_output = compress_tool_output
         self.compressor = compressor
         self.trace_file = trace_file
@@ -1005,11 +1007,30 @@ class Projector:
 
     async def flush(self):
         """
-        Wait for all pending background fact extraction tasks to complete.
-        Call this before shutting down to ensure all facts are stored.
+        Wait for all pending background fact extraction tasks to complete,
+        bounded by ``flush_timeout`` seconds (default 10). On timeout a warning
+        is logged and the still-pending tasks are cancelled; flush() returns
+        normally instead of raising, so ask()/process() callers still get their
+        reply rather than blocking forever on a runaway extractor.
         """
-        if self._pending_extractions:
-            await asyncio.gather(*self._pending_extractions, return_exceptions=True)
+        if not self._pending_extractions:
+            return
+        tasks = list(self._pending_extractions)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=self.flush_timeout,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "Fact extraction did not complete within %.1fs (flush_timeout); "
+                "returning without it. Raise flush_timeout if this recurs.",
+                self.flush_timeout,
+            )
+            # wait_for cancels the gather, which cancels the child tasks.
+            for t in tasks:
+                t.cancel()
+        finally:
             self._pending_extractions.clear()
 
     async def aclose(self):
