@@ -124,7 +124,8 @@ class SQLiteBackend(MemoryBackend):
     thread pool via asyncio.to_thread for performance.
     
     Automatically re-initializes if DB is deleted mid-session (OperationalError)
-    or if the DB file is recreated (detected by file creation time change).
+    or if the DB file is replaced (detected by a change in the file's
+    (st_dev, st_ino) identity, which is OS-independent).
     """
     
     def __init__(
@@ -141,7 +142,11 @@ class SQLiteBackend(MemoryBackend):
         self._init_lock = None
         self._thread_lock = threading.Lock()
         self._conn = None
-        self._file_creation_time = None
+        # File identity of the DB as (st_dev, st_ino), or None when it cannot
+        # be tracked (file missing, or filesystem reports st_ino == 0). Used
+        # to detect a genuine file replacement; deliberately NOT ctime, whose
+        # meaning differs per OS (see _check_file_recreated).
+        self._file_identity = None
         # LRU caps for the per-session index cache. None means unbounded.
         self._max_cached_sessions = _resolve_cap(
             max_cached_sessions, "CYRRUS_INDEX_MAX_SESSIONS", DEFAULT_MAX_CACHED_SESSIONS
@@ -161,12 +166,22 @@ class SQLiteBackend(MemoryBackend):
             self._init_lock = asyncio.Lock()
         return self._init_lock
     
-    def _get_file_creation_time(self):
-        """Get the creation time of the DB file, or None if it doesn't exist."""
+    def _get_file_identity(self):
+        """Return the DB file's identity as (st_dev, st_ino), or None when it
+        cannot be tracked.
+
+        None means either the file does not exist or the filesystem does not
+        report a usable inode number (st_ino == 0 on some network/FAT mounts).
+        Callers treat None as "identity unknown" and skip replacement
+        detection rather than guess.
+        """
         try:
-            return os.path.getctime(self.db_path)
+            st = os.stat(self.db_path)
         except OSError:
             return None
+        if st.st_ino == 0:
+            return None
+        return (st.st_dev, st.st_ino)
     
     def _connect(self):
         """Create a new database connection with WAL mode."""
@@ -181,7 +196,7 @@ class SQLiteBackend(MemoryBackend):
         """Get or create the persistent connection."""
         if self._conn is None:
             self._conn = self._connect()
-            self._file_creation_time = self._get_file_creation_time()
+            self._file_identity = self._get_file_identity()
         return self._conn
     
     def _reset_connection(self):
@@ -193,7 +208,7 @@ class SQLiteBackend(MemoryBackend):
                 pass
             self._conn = None
         self._initialized = False
-        self._file_creation_time = None
+        self._file_identity = None
         with self._index_lock:
             self._indexes.clear()
             self._index_total_docs = 0
@@ -234,18 +249,40 @@ class SQLiteBackend(MemoryBackend):
             self._index_total_docs -= oldest["index"].corpus_size
     
     def _check_file_recreated(self):
-        """Check if the DB file has been recreated since last check."""
-        current_ctime = self._get_file_creation_time()
-        if current_ctime is None:
-            # File doesn't exist
-            if self._file_creation_time is not None:
+        """Check if the DB file has been replaced or deleted since last check.
+
+        Identity is the file's (st_dev, st_ino) pair, NOT ctime: on Linux/macOS
+        ctime is the inode *change* time and is bumped by a routine WAL
+        checkpoint, which the old ctime check misread as a replacement (and
+        then closed the live connection mid-statement -> segfault). An inode
+        only changes when the path is repointed at a different file (e.g.
+        os.replace), which is a genuine recreation.
+
+        If the file exists but the filesystem reports st_ino == 0 (some
+        network/FAT mounts), identity cannot be tracked; we skip detection and
+        report "not recreated" rather than guess.
+        """
+        try:
+            st = os.stat(self.db_path)
+        except OSError:
+            st = None
+
+        if st is None:
+            # File does not exist right now.
+            if self._file_identity is not None:
                 log.info("DB file deleted, will reinitialize on next operation")
                 self._reset_connection()
                 return True
             return False
-        elif self._file_creation_time is not None and current_ctime != self._file_creation_time:
-            # File was recreated (different creation time)
-            log.info("DB file recreated, will reinitialize on next operation")
+
+        if st.st_ino == 0:
+            # Cannot track identity on this filesystem; never guess.
+            return False
+
+        current_identity = (st.st_dev, st.st_ino)
+        if self._file_identity is not None and current_identity != self._file_identity:
+            # Path now resolves to a different inode -> genuine replacement.
+            log.info("DB file recreated (inode changed), will reinitialize on next operation")
             self._reset_connection()
             return True
         return False
