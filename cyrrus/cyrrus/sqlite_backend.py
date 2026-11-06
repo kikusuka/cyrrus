@@ -120,8 +120,11 @@ class SQLiteBackend(MemoryBackend):
     implementation in MemoryVault, but as a pluggable backend.
     
     Uses a single persistent connection per DB path (singleton) with WAL mode.
-    Thread safety is ensured with a threading.Lock. Operations run in a
-    thread pool via asyncio.to_thread for performance.
+    Thread safety is ensured with a reentrant lock (threading.RLock) that
+    serializes every connection use -- including close() during a reset -- so a
+    worker thread can never execute against a connection another thread is
+    closing. Operations run in a thread pool via asyncio.to_thread for
+    performance.
     
     Automatically re-initializes if DB is deleted mid-session (OperationalError)
     or if the DB file is replaced (detected by a change in the file's
@@ -140,7 +143,11 @@ class SQLiteBackend(MemoryBackend):
         self.db_path = db_path
         self._initialized = False
         self._init_lock = None
-        self._thread_lock = threading.Lock()
+        # Reentrant so the same worker thread can hold it across a whole
+        # operation and re-enter it in _get_connection / _reset_connection /
+        # _check_file_recreated. Serializing close() against in-flight
+        # statements is what prevents the use-after-free segfault.
+        self._thread_lock = threading.RLock()
         self._conn = None
         # File identity of the DB as (st_dev, st_ino), or None when it cannot
         # be tracked (file missing, or filesystem reports st_ino == 0). Used
@@ -193,25 +200,37 @@ class SQLiteBackend(MemoryBackend):
         return conn
     
     def _get_connection(self):
-        """Get or create the persistent connection."""
-        if self._conn is None:
-            self._conn = self._connect()
-            self._file_identity = self._get_file_identity()
-        return self._conn
+        """Get or create the persistent connection.
+
+        Guarded by the (reentrant) connection lock so the connect + identity
+        record cannot interleave with a concurrent reset/close.
+        """
+        with self._thread_lock:
+            if self._conn is None:
+                self._conn = self._connect()
+                self._file_identity = self._get_file_identity()
+            return self._conn
     
     def _reset_connection(self):
-        """Reset the connection (e.g., after DB deletion)."""
-        if self._conn:
-            try:
-                self._conn.close()
-            except:
-                pass
-            self._conn = None
-        self._initialized = False
-        self._file_identity = None
-        with self._index_lock:
-            self._indexes.clear()
-            self._index_total_docs = 0
+        """Reset the connection (e.g., after DB deletion or replacement).
+
+        Holds the connection lock across close()/clear so the shared
+        connection is never closed while another worker thread is mid-statement
+        on it. The lock is reentrant: callers such as _wrapped and
+        _check_file_recreated already hold it.
+        """
+        with self._thread_lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except:
+                    pass
+                self._conn = None
+            self._initialized = False
+            self._file_identity = None
+            with self._index_lock:
+                self._indexes.clear()
+                self._index_total_docs = 0
 
     def _invalidate_index(self, session_id: str):
         """Drop the cached index for a session after its facts change."""
@@ -261,31 +280,38 @@ class SQLiteBackend(MemoryBackend):
         If the file exists but the filesystem reports st_ino == 0 (some
         network/FAT mounts), identity cannot be tracked; we skip detection and
         report "not recreated" rather than guess.
-        """
-        try:
-            st = os.stat(self.db_path)
-        except OSError:
-            st = None
 
-        if st is None:
-            # File does not exist right now.
-            if self._file_identity is not None:
-                log.info("DB file deleted, will reinitialize on next operation")
+        The whole stat + compare + reset runs under the connection lock. The
+        first thread to observe a change clears _file_identity inside the lock,
+        so a second thread re-checks under the same lock, sees identity is now
+        unknown, and returns without resetting again (no double reset, no close
+        racing an in-flight statement).
+        """
+        with self._thread_lock:
+            try:
+                st = os.stat(self.db_path)
+            except OSError:
+                st = None
+
+            if st is None:
+                # File does not exist right now.
+                if self._file_identity is not None:
+                    log.info("DB file deleted, will reinitialize on next operation")
+                    self._reset_connection()
+                    return True
+                return False
+
+            if st.st_ino == 0:
+                # Cannot track identity on this filesystem; never guess.
+                return False
+
+            current_identity = (st.st_dev, st.st_ino)
+            if self._file_identity is not None and current_identity != self._file_identity:
+                # Path now resolves to a different inode -> genuine replacement.
+                log.info("DB file recreated (inode changed), will reinitialize on next operation")
                 self._reset_connection()
                 return True
             return False
-
-        if st.st_ino == 0:
-            # Cannot track identity on this filesystem; never guess.
-            return False
-
-        current_identity = (st.st_dev, st.st_ino)
-        if self._file_identity is not None and current_identity != self._file_identity:
-            # Path now resolves to a different inode -> genuine replacement.
-            log.info("DB file recreated (inode changed), will reinitialize on next operation")
-            self._reset_connection()
-            return True
-        return False
     
     async def init_db(self) -> None:
         """Initialize the SQLite database with schema and indexes."""
@@ -301,8 +327,12 @@ class SQLiteBackend(MemoryBackend):
                 return
             
             def _init():
-                conn = self._get_connection()
+                # Hold the connection lock across schema setup so a concurrent
+                # reset cannot close the connection mid-DDL. Reentrant: the
+                # nested _get_connection() re-acquires it on the same thread.
+                self._thread_lock.acquire()
                 try:
+                    conn = self._get_connection()
                     # Check if table exists
                     cursor = conn.execute(
                         "SELECT name FROM sqlite_master WHERE type='table' AND name='facts'"
@@ -362,7 +392,9 @@ class SQLiteBackend(MemoryBackend):
                     
                     conn.commit()
                 finally:
-                    pass  # Keep connection open for reuse
+                    # Release the connection lock; keep the connection open
+                    # for reuse.
+                    self._thread_lock.release()
             
             await asyncio.to_thread(_init)
             self._initialized = True
