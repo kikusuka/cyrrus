@@ -281,12 +281,37 @@ class SQLiteBackend(MemoryBackend):
         network/FAT mounts), identity cannot be tracked; we skip detection and
         report "not recreated" rather than guess.
 
-        The whole stat + compare + reset runs under the connection lock. The
-        first thread to observe a change clears _file_identity inside the lock,
-        so a second thread re-checks under the same lock, sees identity is now
-        unknown, and returns without resetting again (no double reset, no close
-        racing an in-flight statement).
+        Double-checked: the common no-change case is a lock-free stat, because
+        _execute_with_retry calls this synchronously on the gateway's asyncio
+        event-loop thread before every operation -- acquiring the connection
+        mutex there would stall the loop for the duration of any in-flight SQL
+        statement held by a worker thread. Reading _file_identity without the
+        lock is safe under CPython's GIL (the value is an immutable tuple or
+        None); a stale read can only send us down the slow path unnecessarily,
+        never miss a reset. Only when a change is *suspected* do we take the
+        lock, re-stat, and re-check the identity inside it, so the first thread
+        to observe the change clears _file_identity while a second thread sees
+        it already handled and returns without a double reset.
         """
+        # Fast path: no lock, no blocking of the event loop.
+        recorded = self._file_identity
+        if recorded is None:
+            # Identity unknown (never connected, or already reset) -> nothing
+            # to compare against; the next _get_connection/init_db re-establishes.
+            return False
+        try:
+            st = os.stat(self.db_path)
+        except OSError:
+            st = None
+        if st is not None and st.st_ino == 0:
+            # Cannot track identity on this filesystem; never guess.
+            return False
+        current_identity = None if st is None else (st.st_dev, st.st_ino)
+        if current_identity == recorded:
+            return False
+
+        # Slow path: a replacement (inode differs) or deletion (stat failed) is
+        # suspected. Re-check under the lock so two threads cannot both reset.
         with self._thread_lock:
             try:
                 st = os.stat(self.db_path)

@@ -22,6 +22,8 @@ in that case, and (c) exercises the skip path directly via a faked stat.
 """
 import os
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -187,4 +189,50 @@ def test_inode_zero_skips_detection(tmp_path, monkeypatch):
         assert be._conn is conn_before, (
             "connection was reset despite unusable inode")
     finally:
+        _close_backend(be)
+
+
+def test_unchanged_file_does_not_block_on_connection_lock(tmp_path):
+    """(d) The no-change fast path must NOT acquire the connection lock.
+
+    ``_execute_with_retry`` calls ``_check_file_recreated()`` synchronously on
+    the gateway's asyncio event-loop thread before every operation. If that
+    call blocks on ``_thread_lock``, the loop stalls for the duration of any
+    in-flight SQL statement held by a worker thread -- a regression versus the
+    pre-fix lock-free ``getctime`` stat, and the opposite of the intended
+    double-checked design (cheap stat outside the lock, re-check + reset only
+    when a change is suspected). With the file unchanged, the check must return
+    promptly even while another thread holds the lock.
+    """
+    db = str(tmp_path / "d.db")
+    be = SQLiteBackend(db)
+    hold = 2.0
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with be._thread_lock:
+            acquired.set()
+            release.wait(hold + 3.0)
+
+    t = threading.Thread(target=holder, daemon=True)
+    try:
+        be._get_connection()  # records identity; file unchanged thereafter
+        if not _usable_inode(db):
+            pytest.skip("filesystem reports st_ino == 0; identity detection skipped")
+
+        t.start()
+        assert acquired.wait(5.0), "holder thread never took the connection lock"
+
+        start = time.perf_counter()
+        result = be._check_file_recreated()
+        elapsed = time.perf_counter() - start
+
+        assert result is False, "unchanged file reported as recreated"
+        assert elapsed < hold / 2, (
+            "no-change check blocked %.3fs on the connection lock; the "
+            "event-loop fast path must not acquire it" % elapsed)
+    finally:
+        release.set()
+        t.join(timeout=5.0)
         _close_backend(be)
