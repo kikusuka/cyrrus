@@ -102,6 +102,9 @@ def test_gateway_starts_warmup_thread_when_configured(tmp_path):
         seed.close()
 
     gw = Gateway(_gateway_config(db, 4))
+    loop_thread = gw._loop_thread
+    assert loop_thread is not None and loop_thread.is_alive(), (
+        "expected a live cyrrus-event-loop thread before close()")
     try:
         assert gw.warmup_thread is not None
         assert gw.warmup_thread.daemon is True
@@ -110,12 +113,22 @@ def test_gateway_starts_warmup_thread_when_configured(tmp_path):
         backend = gw.projector.memory._backend
         assert "s1" in backend._indexes
     finally:
-        backend = gw.projector.memory._backend
-        backend._indexes.clear()
+        gw.close()
+    # The leak this guards: without close() the daemon loop thread survives the
+    # test. close() must stop and join it.
+    assert not loop_thread.is_alive(), (
+        "cyrrus-event-loop thread survived Gateway.close()")
 
 
 def test_gateway_no_warmup_by_default(tmp_path):
     from cyrrus.gateway import Gateway
 
     gw = Gateway(_gateway_config(str(tmp_path / "off.db"), 0))
-    assert gw.warmup_thread is None
+    loop_thread = gw._loop_thread
+    try:
+        assert gw.warmup_thread is None
+    finally:
+        gw.close()
+    assert loop_thread is not None
+    assert not loop_thread.is_alive(), (
+        "cyrrus-event-loop thread survived Gateway.close()")
