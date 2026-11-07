@@ -93,7 +93,7 @@ The model still knows the user was building a Discord bot. It's just not front a
 
 **Per-session memory that doesn't leak.** Facts are extracted from conversation automatically (no LLM call needed, pure heuristics) and isolated by `session_id`. User A never sees User B's data.
 
-**It fails safely.** If routing breaks, if memory breaks, if a tool call hangs — cyrrus falls back to a raw LLM call instead of crashing your bot. This is tested: 60+ tests including adversarial scenarios (500 concurrent users, database deletion mid-write, prompt injection attempts, rotating exception types) all pass clean.
+**It fails open.** If routing, memory or a tool call breaks, cyrrus falls back to a plain LLM call instead of crashing your app. The gateway is covered by tests for concurrent load and for shutting down mid-load without silently losing recorded turns.
 
 ---
 
