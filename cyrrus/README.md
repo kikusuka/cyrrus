@@ -57,13 +57,23 @@ The LLM receives clean, relevant context. Not a wall of everything you've ever d
 
 ---
 
-## Numbers
+## What's measured
 
-- **51.6% token reduction** on average across mixed conversations (real tiktoken counts)
-- **0.018 MB** core install — zero required dependencies
-- **121.9 MB / 241.7 MB RAM** for the optional embeddings block
-- **500 concurrent users** with zero errors
-- Surviving every adversarial test thrown at it
+- **Zero required dependencies.** The core is standard-library only. Extras (`cyrrus[embeddings]`) are optional.
+- **Concurrency:** the gateway is tested with 200 concurrent requests, all served with memory injected and no fail-opens, repeated on Python 3.9 and 3.13 (`tests/test_gateway.py`).
+- **Retrieval at scale:** relevance-ranked retrieval over 50,000 stored facts in one session takes about 70 ms once the index is warm (see `devtools/bench`).
+- **Compatibility:** Python 3.9 to 3.13 are tested in CI on Linux.
+
+Numbers come from the benchmark in `devtools/bench`, which measures which facts get injected, not answer quality. It is written by the same team as cyrrus, so treat comparisons with that in mind.
+
+## Known limitations
+
+- **Paraphrases:** retrieval is lexical (BM25). "Where do I live?" will not find "I moved to Porto" unless words overlap. Optional embeddings help; this is not yet benchmarked.
+- **Corrections under a different key:** "I no longer like pizza" does not retire an older fact stored under another key.
+- **Topic switches:** old-topic facts can come back when words overlap. There is no topic expiry yet.
+- **Precision:** with many look-alike facts, cyrrus finds the right one but also injects some similar noise.
+- **First request after a restart** builds the search index for that session, which can take seconds for very large sessions (about 2 s at 50,000 facts).
+- **Not yet tested:** macOS, and Windows under file-replacement load.
 
 ---
 
