@@ -20,7 +20,7 @@
 - Replaced memory and session tool placeholders with real implementations
 
 ### Added
-- `devtools/bench`: a deterministic, offline benchmark for injection quality (recall, stale leakage, distractor rate, tokens, latency). Scenarios cyrrus currently fails are marked `[known-weak]`.
+- `devtools/bench`: a deterministic, offline benchmark for injection quality (recall, stale leakage, distractor rate, tokens, latency). Scenarios cyrrus currently fails are marked `[known-weak]` (source repository only).
 - Guided `cyrrus setup` wizard, `cyrrus home` menu, arrow-key selection with a
   numbered fallback, and an intro that dissolves into the interface.
 - Safer API-key handling: `--api-key-env NAME` stores only the variable name,
