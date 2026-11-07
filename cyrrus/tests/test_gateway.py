@@ -1,6 +1,9 @@
 import asyncio
 import http.client
 import json
+import re
+import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,8 +21,9 @@ async def _llm(messages):
     return "unused"
 
 
-def _projector(tmp_path, **kwargs):
-    return Projector(
+def _projector(tmp_path, projector_cls=Projector, **kwargs):
+    """Projector for gateway tests; ``projector_cls`` lets a test wrap record_turn."""
+    return projector_cls(
         {"core_lamp": {"content": "Be concise."}, "weather": {"content": "Weather slide.", "triggers": ["weather"]}},
         _llm, memory_db_path=str(tmp_path / "memory.sqlite"), **kwargs
     )
@@ -27,6 +31,17 @@ def _projector(tmp_path, **kwargs):
 
 def _config():
     return validate_config({"provider": {"base_url": "http://127.0.0.1:9/v1", "model": "test-model"}})
+
+
+class _UpstreamServer(ThreadingHTTPServer):
+    """Fake upstream sized to absorb 200 simultaneous forwarded requests.
+
+    The stdlib default listen backlog (5) makes a plain ThreadingHTTPServer
+    refuse the tail of a 200-way burst; that is a harness limit, not the thing
+    under test, so raise it (and keep handler threads daemon) here.
+    """
+    daemon_threads = True
+    request_queue_size = 512
 
 
 def _fake_upstream():
@@ -58,7 +73,7 @@ def _fake_upstream():
                 self.wfile.write(b"data: [DONE]\n\n")
             else:
                 self.wfile.write(b'{"choices":[{"message":{"content":"ok"}}]}')
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = _UpstreamServer(("127.0.0.1", 0), Handler)
     server.bodies, server.error = [], False
     server.stream_gate = None
     server.first_sent = threading.Event()
@@ -294,11 +309,906 @@ def test_request_body_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_module, "MAX_BODY", 32)
     upstream, _, server, _ = _with_upstream(tmp_path)
     host, port = "127.0.0.1", server.server_address[1]
-    conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
-        body = b"x" * 100
-        conn.request("POST", "/v1/chat/completions", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
-        assert conn.getresponse().status == 413
+        # Oversized 1 MB body, repeated: if the server answers 413 without
+        # draining the request body, its socket close sends a TCP RST and the
+        # client's read intermittently dies with ConnectionAbortedError
+        # (WinError 10053 on Windows). No sleeps; determinism comes from the
+        # server fully reading the request before it responds and closes.
+        body = b"x" * (1024 * 1024)
+        for _ in range(30):
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                conn.request(
+                    "POST", "/v1/chat/completions", body=body,
+                    headers={"Content-Type": "application/json",
+                             "Content-Length": str(len(body))},
+                )
+                response = conn.getresponse()
+                assert response.status == 413
+                response.read()
+            finally:
+                conn.close()
     finally:
-        conn.close(); server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
+        server.shutdown(); server.server_close(); upstream.shutdown(); upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 — gateway event-loop bug: shared asyncio primitives across per-request
+# asyncio.run() loops must not cause cross-loop fail-opens under concurrency.
+# --------------------------------------------------------------------------- #
+def _seeded_projector(tmp_path, session, keyword, value):
+    """Projector with one memory fact already stored for ``session``."""
+    projector = _projector(tmp_path)
+    asyncio.run(projector.memory.upsert(session, keyword, value, len(value.split())))
+    return projector
+
+
+def _concurrent_requests(base, n, session, text):
+    """Fire ``n`` simultaneous POSTs (released together by a barrier).
+
+    Returns (errors, codes). Each worker opens its own connection so the
+    ThreadingHTTPServer dispatches one OS thread per request -- exactly the
+    path that used to run a fresh asyncio loop per request.
+
+    The cross-loop sharing this guards against is a genuine data race: with the
+    default 5 ms GIL switch interval the tiny lock-held windows almost never
+    overlap, so it stays latent.  ``sys.setswitchinterval`` shrinks that window
+    so the race is exercised every run instead of occasionally; it is restored
+    afterwards.  This does not change what is asserted, only how reliably the
+    (already-present) concurrency bug is triggered.
+    """
+    errors, codes = [], []
+    guard = threading.Lock()
+    barrier = threading.Barrier(n, timeout=120)
+    host, port = base.split("//", 1)[1].split(":", 1)
+    port = int(port)
+
+    def worker():
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                errors.append("barrier %r" % exc)
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=30)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": text}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                codes.append(response.status)
+        except HTTPError as exc:
+            with guard:
+                errors.append("http %s %s" % (exc.code, exc.reason))
+        except Exception as exc:  # noqa: BLE001 - the test asserts on this bucket
+            with guard:
+                errors.append("req %r" % exc)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-4)
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    for thread in threads:
+        if thread.is_alive():
+            with guard:
+                errors.append("worker thread hung (never finished)")
+    return errors, codes
+
+
+def test_gateway_concurrent_requests_no_cross_loop_fail_open(tmp_path):
+    """200 simultaneous requests must all succeed with context injected.
+
+    Before the fix each request ran its own ``asyncio.run()`` loop while the
+    Projector shared ``asyncio.Lock`` objects across them; under concurrency
+    those locks raised "bound to a different event loop" / "attached to a
+    different loop", which the gateway swallowed as fail-open (returning the
+    request WITHOUT any injected context). We assert: zero request errors, zero
+    fail-opens, and every forwarded body carries the injected system message
+    with the routed slide and the stored memory fact.
+    """
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _seeded_projector(tmp_path, "load", "weather_forecast", "sunny in Porto")
+    server = create_server(config, projector=projector, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        # Warm-up: one sequential request initialises the persistent loop, the
+        # SQLite connection and the first per-session index outside the burst, so
+        # cold-start cost cannot masquerade as a concurrency failure.
+        warm = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=30)
+        warm.request(
+            "POST", "/v1/chat/completions",
+            body=json.dumps({"model": "x", "user": "load",
+                             "messages": [{"role": "user", "content": "weather please"}]}),
+            headers={"Content-Type": "application/json"},
+        )
+        warm.getresponse().read(); warm.close()
+        del upstream.bodies[:]
+        errors, codes = _concurrent_requests(base, 200, "load", "weather please")
+        gateway = server.gateway
+
+        assert not errors, "request errors: %s" % errors[:12]
+        assert len(codes) == 200, "expected 200 responses, got %d" % len(codes)
+        assert all(code == 200 for code in codes), "non-200 responses: %s" % set(codes)
+        assert gateway.counters["fail_open"] == 0, "fail-opens: %d" % gateway.counters["fail_open"]
+        assert len(upstream.bodies) == 200, "only %d bodies reached upstream" % len(upstream.bodies)
+        for body in upstream.bodies:
+            system = body["messages"][0]
+            assert system["role"] == "system", "no system message injected: %r" % body["messages"][:1]
+            assert "Weather slide." in system["content"], "slide not injected: %r" % system["content"][:200]
+            assert "sunny in Porto" in system["content"], "memory not injected: %r" % system["content"][:200]
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+_SHUTDOWN_CHILD = '''
+import json, os, tempfile, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
+from cyrrus.config import validate_config
+from cyrrus.gateway import create_server
+from cyrrus.projector import Projector
+
+
+class Up(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers["Content-Length"])
+        self.rfile.read(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b\'{"choices":[{"message":{"content":"ok"}}]}\')
+
+
+up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+threading.Thread(target=up.serve_forever, daemon=True).start()
+
+
+async def _llm(m):
+    return "x"
+
+
+proj = Projector({"core_lamp": {"content": "Be concise."}}, _llm,
+                 memory_db_path=os.path.join(tempfile.mkdtemp(), "m.sqlite"))
+cfg = validate_config({"provider": {"base_url": "http://127.0.0.1:%s/v1" % up.server_address[1], "model": "m"}})
+server = create_server(cfg, projector=proj, port=0)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+base = "http://127.0.0.1:%s" % server.server_address[1]
+
+for _ in range(25):
+    urlopen(Request(base + "/v1/chat/completions",
+                    data=json.dumps({"model": "m", "user": "s",
+                                     "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                    headers={"Content-Type": "application/json"})).read()
+
+server.shutdown()
+server.server_close()
+close = getattr(server.gateway, "close", None)
+if close:
+    close()
+up.shutdown()
+up.server_close()
+print("CHILD-DONE")
+'''
+
+
+def test_gateway_clean_shutdown_process_exits(tmp_path):
+    """A gateway process must exit with no hanging threads after shutdown.
+
+    Runs a full create_server -> serve -> request -> shutdown cycle in a child
+    interpreter. If the persistent event loop (or any loop-owned thread) is left
+    non-daemon and un-stopped, the child never exits and this times out.
+    """
+    import subprocess
+    import sys
+    script = tmp_path / "shutdown_child.py"
+    script.write_text(_SHUTDOWN_CHILD, encoding="utf-8")
+    try:
+        proc = subprocess.run([sys.executable, str(script)], capture_output=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        pytest.fail("gateway child did not exit within 90s (hanging thread)")
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert b"CHILD-DONE" in proc.stdout, proc.stdout.decode("utf-8", "replace")
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 — shutdown data loss: close() drained only a SNAPSHOT of the background
+# futures, so a record_turn that raced the drain was never awaited, and one
+# fired after the loop was stopped was dropped silently (record_turn is what
+# extracts and stores the turn's facts, so the facts went with it).
+# --------------------------------------------------------------------------- #
+async def _marker_extractor(user_text):
+    """Turn user text into one deterministic fact.
+
+    The fact's value is the request's own marker string, so a fresh SQLite
+    connection opened after close() proves, per session, that the turn was
+    recorded and its fact extracted.
+    """
+    return {"turn_marker": user_text}
+
+
+def _close_mid_load_burst(server, sessions, markers, close_after):
+    """One request per session, all released together, gateway closed once
+    ``close_after`` responses have landed.
+
+    Returns (results, shutdown_state): results is a list of
+    (session, marker, status_or_error) and shutdown_state records whether the
+    closer actually ran and how many responses had arrived when close() returned.
+    Closing mid-burst is the point: the handlers still between "response written"
+    and "record_turn fired" are exactly the work the old shutdown dropped.
+    """
+    results, guard = [], threading.Lock()
+    host, port = "127.0.0.1", server.server_address[1]
+    barrier = threading.Barrier(len(sessions), timeout=120)
+    burst_finished = threading.Event()
+    shutdown_state = {"closed": False, "delivered_at_close": 0, "drain_s": None}
+
+    def worker(index):
+        session, marker = sessions[index], markers[index]
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                results.append((session, marker, "barrier %r" % exc))
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=60)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": marker}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                results.append((session, marker, response.status))
+        except Exception as exc:  # noqa: BLE001 - reported, not asserted away
+            with guard:
+                results.append((session, marker, "error %r" % exc))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def closer():
+        while not burst_finished.is_set():
+            with guard:
+                delivered = len(results)
+            if delivered >= close_after:
+                break
+            burst_finished.wait(0.002)
+        if burst_finished.is_set() and len(results) < close_after:
+            return  # the burst ended before a mid-load close was possible
+        # Close the GATEWAY first, while handlers are still serving: that is the
+        # race that used to drop turns. Shutting the listening socket first would
+        # instead just refuse the backlog (178 of 200 connections in an earlier
+        # run), so the burst would barely touch the shutdown path at all.
+        drain_start = time.monotonic()
+        server.gateway.close()
+        with guard:
+            shutdown_state["closed"] = True
+            shutdown_state["delivered_at_close"] = len(results)
+            shutdown_state["drain_s"] = round(time.monotonic() - drain_start, 3)
+        server.shutdown()
+        server.server_close()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(sessions))]
+    closer_thread = threading.Thread(target=closer)
+    previous = sys.getswitchinterval()
+    # Same stress as the concurrency test: shrink the GIL switch interval so the
+    # shutdown/response interleaving actually overlaps instead of being rare.
+    sys.setswitchinterval(1e-4)
+    try:
+        for thread in threads:
+            thread.start()
+        closer_thread.start()
+        for thread in threads:
+            thread.join(timeout=180)
+        burst_finished.set()
+        closer_thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    for thread in threads:
+        if thread.is_alive():
+            results.append(("hung", "worker", "thread never finished"))
+    return results, shutdown_state
+
+
+def test_gateway_close_mid_load_records_every_delivered_turn(tmp_path, caplog):
+    """No request that got HTTP 200 may lose its turn or its facts at shutdown.
+
+    200 concurrent requests, one session each, close() called while the burst is
+    still in flight. After close() returns, every session that received a 200
+    must have (a) its turn in the projector history and (b) its marker fact in
+    SQLite — read through a brand-new connection, so nothing cached is counted.
+    """
+    n = 200
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    sessions = ["shut-%03d" % i for i in range(n)]
+    markers = ["remember marker-%03d" % i for i in range(n)]
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, fact_extractor=_marker_extractor)
+    server = create_server(config, projector=projector, port=0)
+    serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    serve_thread.start()
+    try:
+        results, shutdown_state = _close_mid_load_burst(server, sessions, markers,
+                                                        close_after=n // 20)
+        assert shutdown_state["closed"], "close() never ran during the burst"
+
+        delivered = [(session, marker) for session, marker, status in results if status == 200]
+        not_ok = [(session, status) for session, _m, status in results if status != 200]
+        assert delivered, "no request returned 200: %s" % (not_ok[:8],)
+
+        # The DB is opened only now, after close() has returned.
+        connection = sqlite3.connect(str(tmp_path / "memory.sqlite"))
+        try:
+            stored = set(connection.execute("SELECT session_id, keyword, value FROM facts"))
+        finally:
+            connection.close()
+
+        missing_facts = [(session, marker) for session, marker in delivered
+                         if (session, "turn_marker", marker) not in stored]
+        missing_turns = [session for session, _m in delivered
+                         if len(projector._histories.get(session) or ()) != 2]
+
+        # Diagnostic first, assertion second: shutdown behaviour is a race, so a
+        # failure report has to say how much was lost and where, not just "False".
+        # drain_s / refused / drain_timeout_warnings classify a failure: a loss
+        # with no warning is a real bug, a loss after "drain timed out" is the
+        # shutdown budget running out (slowness), which are different defects.
+        warnings_text = [record.getMessage() for record in caplog.records]
+        drain_timeouts = sum(1 for text in warnings_text if "drain timed out" in text)
+        report = (
+            "delivered=%d errors=%d close_returned_after=%d "
+            "turns_lost=%d facts_lost=%d drain_s=%s refused=%d drain_timeouts=%d "
+            "lost_samples=%s"
+            % (len(delivered), len(not_ok), shutdown_state["delivered_at_close"],
+               len(missing_turns), len(missing_facts), shutdown_state["drain_s"],
+               server.gateway.counters.get("record_refused", -1), drain_timeouts,
+               missing_turns[:6])
+        )
+        print("SHUTDOWN-LOSS " + report)
+
+        assert not missing_turns, "turn(s) lost at shutdown (report=%s)" % report
+        assert not missing_facts, "fact(s) lost at shutdown (report=%s)" % report
+        assert len(stored) == len(delivered), (
+            "stored %d facts for %d delivered requests" % (len(stored), len(delivered)))
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+_CLOSE_MID_LOAD_CHILD = '''
+import http.client, json, os, tempfile, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from cyrrus.config import validate_config
+from cyrrus.gateway import create_server
+from cyrrus.projector import Projector
+
+
+class Up(BaseHTTPRequestHandler):
+    daemon_threads = True
+    request_queue_size = 512
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers["Content-Length"])
+        self.rfile.read(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b\'{"choices":[{"message":{"content":"ok"}}]}\')
+
+
+up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
+threading.Thread(target=up.serve_forever, daemon=True).start()
+
+
+async def _llm(m):
+    return "x"
+
+
+async def _extract(text):
+    return {"turn_marker": text}
+
+
+proj = Projector({"core_lamp": {"content": "Be concise."}}, _llm,
+                 memory_db_path=os.path.join(tempfile.mkdtemp(), "m.sqlite"),
+                 fact_extractor=_extract)
+cfg = validate_config({"provider": {"base_url": "http://127.0.0.1:%s/v1" % up.server_address[1], "model": "m"}})
+server = create_server(cfg, projector=proj, port=0)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+host, port = "127.0.0.1", server.server_address[1]
+
+done = []
+guard = threading.Lock()
+burst_over = threading.Event()
+
+
+def worker(i):
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=30)
+        conn.request("POST", "/v1/chat/completions",
+                     body=json.dumps({"model": "m", "user": "s%03d" % i,
+                                      "messages": [{"role": "user", "content": "remember marker-%03d" % i}]}),
+                     headers={"Content-Type": "application/json"})
+        r = conn.getresponse(); r.read()
+        with guard:
+            done.append(r.status)
+    except Exception as e:
+        with guard:
+            done.append(repr(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+threads = [threading.Thread(target=worker, args=(i,)) for i in range(60)]
+for t in threads:
+    t.start()
+
+while len(done) < 8:
+    if burst_over.wait(0.005):
+        break
+
+# Same order the burst test uses: gateway first, so the drain races live
+# handlers, then the listener.
+close = getattr(server.gateway, "close", None)
+if close:
+    close()
+server.shutdown()
+server.server_close()
+
+burst_over.set()
+for t in threads:
+    t.join(120)
+
+up.shutdown()
+up.server_close()
+leftover = [t.name for t in threading.enumerate()
+            if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+loop_thread = getattr(server.gateway, "_loop_thread", None)
+print("NONDAEMON=%s" % leftover)
+print("LOOP_ALIVE=%s" % bool(loop_thread and loop_thread.is_alive()))
+print("CHILD-DONE")
+'''
+
+
+def test_gateway_close_mid_load_child_exits_cleanly():
+    """Closing while traffic is in flight must still leave nothing hanging.
+
+    The drain makes close() wait for handlers, so it is the path most likely to
+    strand the loop thread or a non-daemon thread and wedge interpreter exit.
+    """
+    import subprocess
+    proc = subprocess.run([sys.executable, "-c", _CLOSE_MID_LOAD_CHILD],
+                          capture_output=True, timeout=180)
+    out = proc.stdout.decode("utf-8", "replace")
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")[-3000:]
+    assert "CHILD-DONE" in out, out
+    assert "NONDAEMON=[]" in out, "non-daemon threads left behind: %s" % out
+    assert "LOOP_ALIVE=False" in out, "event loop thread still alive: %s" % out
+
+
+def test_gateway_close_with_stalled_upstream_returns_and_speaks_up(tmp_path, caplog):
+    """A handler wedged on a slow upstream must not wedge close().
+
+    The drain waits for open turn windows, so an upstream that stops sending
+    mid-stream can only be ended by the budget.  close() has to return when the
+    budget runs out, say so unambiguously — including how many served turns will
+    not be recorded — and the stalled requests must then still complete instead
+    of deadlocking.
+    """
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    server, base = _start(config, _projector(tmp_path))
+    upstream.stream_gate = threading.Event()   # stalls after the first SSE chunk
+    outcomes, guard = [], threading.Lock()
+
+    def client():
+        try:
+            response = _request(base, {"model": "x", "stream": True,
+                                       "messages": [{"role": "user", "content": "go"}]})
+            body = response.read()             # blocks until the upstream resumes
+            with guard:
+                outcomes.append((response.status, len(body)))
+        except Exception as exc:  # noqa: BLE001 - reported through the assertion
+            with guard:
+                outcomes.append(repr(exc))
+
+    threads = [threading.Thread(target=client, daemon=True) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert upstream.first_sent.wait(10), "upstream never sent a first chunk"
+    time.sleep(0.2)  # let the other handlers reach the same stall
+
+    budget = 1.0
+    started = time.monotonic()
+    server.gateway.close(timeout=budget)
+    elapsed = time.monotonic() - started
+    assert elapsed < budget + 10.0, "close() did not return: deadlock (%.1fs)" % elapsed
+    assert elapsed >= budget, "close() returned before using the drain budget"
+
+    warnings = [r.getMessage() for r in caplog.records]
+    timed_out = [w for w in warnings if "drain timed out" in w]
+    assert timed_out, "stalled drain ended without a warning: %s" % warnings
+    assert "will not be recorded" in timed_out[0], timed_out[0]
+    assert server.gateway._loop_thread is None, "loop thread kept after close()"
+
+    upstream.stream_gate.set()  # the stalled requests must now finish on their own
+    for thread in threads:
+        thread.join(30)
+    assert not any(t.is_alive() for t in threads), "request thread stuck after close()"
+    assert len(outcomes) == 5, outcomes
+    assert all(isinstance(o, tuple) and o[0] == 200 and o[1] > 0 for o in outcomes), outcomes
+    server.gateway.close()  # idempotent
+    upstream.shutdown(); upstream.server_close()
+
+
+def test_gateway_close_with_failing_extractor_drains_fast_and_cleanly(tmp_path, caplog):
+    """A broken extractor must not turn shutdown into a hang or a silent loss.
+
+    record_turn swallows extractor failures and falls back to the built-in
+    facts, so every background future still resolves: the drain must finish on
+    its first pass — well inside the budget, with no timeout warning — and the
+    turn itself must survive in history.
+    """
+    caplog.set_level("WARNING", logger="cyrrus.projector")
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    failures = []
+
+    def exploding_extractor(user_text):
+        failures.append(user_text)
+        raise RuntimeError("extractor exploded")
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, fact_extractor=exploding_extractor)
+    server, base = _start(config, projector)
+    try:
+        n = 20
+        statuses = []
+        status_guard = threading.Lock()
+
+        def client(i):
+            try:
+                statuses.append(_request(base, {"model": "x", "user": "boom-%03d" % i,
+                                                "messages": [{"role": "user",
+                                                              "content": "remember %d" % i}]}).status)
+            except Exception as exc:  # noqa: BLE001
+                with status_guard:
+                    statuses.append(repr(exc))
+
+        threads = [threading.Thread(target=client, args=(i,)) for i in range(n)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        assert not any(t.is_alive() for t in threads), "request thread hung"
+        assert len(statuses) == n and all(s == 200 for s in statuses), statuses
+        assert failures, "extractor never ran"
+
+        started = time.monotonic()
+        server.gateway.close()
+        drain_s = round(time.monotonic() - started, 3)
+        warnings = [r.getMessage() for r in caplog.records]
+        print("EXTRACTOR-FAIL-DRAIN drain_s=%s timeouts=%d extractor_warnings=%d"
+              % (drain_s, sum(1 for w in warnings if "drain timed out" in w),
+                 sum(1 for w in warnings if "extractor failed" in w)))
+        assert drain_s < 5.0, "failing extractor made the drain slow: %ss" % drain_s
+        assert not [w for w in warnings if "drain timed out" in w], warnings
+        assert sum(1 for w in warnings if "extractor failed" in w) >= 1, warnings
+        assert server.gateway.counters.get("record_refused", 0) == 0
+        recorded = [s for s in ("boom-%03d" % i for i in range(n))
+                    if len(projector._histories.get(s) or ()) == 2]
+        assert len(recorded) == n, "turn(s) lost with a failing extractor: %s" % recorded
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Item 1 follow-up (b) — the accounting contract, with no timing dependence: when the
+# drain is forced to stop, recorded + logged_unrecorded has to equal delivered, i.e.
+# every served turn is either in the record or named in the log. Never a silent loss.
+# --------------------------------------------------------------------------- #
+class _GatedRecordProjector(Projector):
+    """Hold record_turn on a test-controlled gate; the request path is untouched.
+
+    build_context starts its own extraction task, so stored facts alone cannot say
+    whether record_turn ran; the turn's history can. Gating only record_turn makes
+    the drain's pending set an exact number read back from the gateway instead of a
+    race outcome, which is what lets this assert an equation rather than a probability.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.release = threading.Event()
+
+    async def record_turn(self, session_id, user_text, assistant_text):
+        await asyncio.to_thread(self.release.wait)
+        return await super().record_turn(session_id, user_text, assistant_text)
+
+
+_LOSS_LINE = re.compile(
+    r"(\d+) record_turn task\(s\) still queued, (\d+) request\(s\) still in flight, "
+    r"(\d+) turn\(s\) already refused; at least (\d+) served turn\(s\) will not be "
+    r"recorded(?: \[sessions: ([^\]]*)\])?")
+
+
+def _delivered_burst(server, sessions, markers):
+    """One request per session, released together, every response read.
+
+    Returns the (session, marker, status) triples the clients saw.
+    """
+    results, guard = [], threading.Lock()
+    host, port = "127.0.0.1", server.server_address[1]
+    barrier = threading.Barrier(len(sessions), timeout=120)
+
+    def worker(index):
+        session, marker = sessions[index], markers[index]
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError as exc:
+            with guard:
+                results.append((session, marker, "barrier %r" % exc))
+            return
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=60)
+            conn.request(
+                "POST", "/v1/chat/completions",
+                body=json.dumps({"model": "x", "user": session,
+                                 "messages": [{"role": "user", "content": marker}]}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            response.read()
+            with guard:
+                results.append((session, marker, response.status))
+        except Exception as exc:  # noqa: BLE001 - reported, not asserted away
+            with guard:
+                results.append((session, marker, "error %r" % exc))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-4)
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(len(sessions))]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    return results
+
+
+@pytest.mark.parametrize("drain_allowed", [False, True])
+def test_gateway_forced_drain_timeout_accounts_every_served_turn(tmp_path, caplog,
+                                                                  drain_allowed):
+    """recorded + logged_unrecorded == delivered, whichever way the drain ends.
+
+    ``drain_allowed`` picks the two outcomes the contract must cover: a drain given
+    the time it needs (nothing lost, nothing to report) and a drain forced to stop at
+    once (nothing recorded, so all of it must be reported). The gate holds every
+    record_turn pending until ``shutdown_counts()`` says so, so the numbers being
+    compared are set up rather than raced for - the assertions do not depend on how
+    fast anything happens to be.
+    """
+    n = 8
+    caplog.set_level("WARNING", logger="cyrrus.gateway")
+    sessions = ["acct-%02d" % i for i in range(n)]
+    markers = ["remember marker-%02d" % i for i in range(n)]
+
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, projector_cls=_GatedRecordProjector,
+                           fact_extractor=_marker_extractor)
+    server = create_server(config, projector=projector, port=0)
+    serve_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    serve_thread.start()
+    try:
+        results = _delivered_burst(server, sessions, markers)
+        delivered = {session for session, _m, status in results if status == 200}
+        assert len(delivered) == n, results
+
+        # Precondition, not a race: with the gate shut no record can finish, so once
+        # every response has been read the drain is holding exactly n named turns.
+        deadline = time.monotonic() + 30
+        while server.gateway.pending_turns() < n and time.monotonic() < deadline:
+            time.sleep(0.005)
+        queued, in_flight, refused = server.gateway.shutdown_counts()
+        assert (queued, in_flight, refused) == (n, 0, 0), (queued, in_flight, refused)
+
+        if drain_allowed:
+            projector.release.set()
+        loop, loop_thread = server.gateway._loop, server.gateway._loop_thread
+        server.gateway.close(timeout=30.0 if drain_allowed else 0.0)
+
+        recorded = {session for session in delivered
+                    if len(projector._histories.get(session) or ()) == 2}
+        warnings = [r.getMessage() for r in caplog.records]
+        timed_out = [w for w in warnings if "drain timed out" in w]
+        refused_lines = [w for w in warnings if "background work refused" in w]
+        match = _LOSS_LINE.search(timed_out[0]) if timed_out else None
+        logged = int(match.group(4)) if match else 0
+        named = set() if match is None or match.group(5) is None \
+            else {name.strip() for name in match.group(5).split(",")}
+        print("ACCOUNTING leg=%s delivered=%d recorded=%d logged_unrecorded=%d "
+              "named=%d refused_lines=%d drain_timeouts=%d"
+              % ("drain" if drain_allowed else "forced", len(delivered), len(recorded),
+                 logged, len(named), len(refused_lines), len(timed_out)))
+
+        # The contract itself, in both legs: what was served is either in the record
+        # or counted in the log, and the log names each one it counted.
+        assert len(recorded) + logged == len(delivered), (
+            "silent loss: %d recorded + %d logged unrecorded != %d delivered"
+            % (len(recorded), logged, len(delivered)))
+        assert delivered <= recorded | named, "unreported lost turn(s): %s" % sorted(
+            delivered - recorded - named)
+        assert server.gateway.counters.get("record_refused", 0) == 0
+        assert not refused_lines, refused_lines
+
+        if drain_allowed:
+            assert not timed_out, warnings
+            assert logged == 0 and len(recorded) == n, warnings
+            # close() joined the loop thread, so its teardown really finished: the
+            # loop object is closed even though close() had already cleared _loop.
+            assert loop.is_closed(), "loop thread left the event loop open"
+        else:
+            assert len(timed_out) == 1, warnings
+            assert match, timed_out
+            # The warning's own arithmetic has to add up, and the names it lists have
+            # to be the turns it says were given up on - not an unrelated set.
+            assert int(match.group(1)) + int(match.group(3)) == logged, timed_out[0]
+            assert (int(match.group(1)), int(match.group(2)), int(match.group(3))) == (n, 0, 0)
+            assert named == delivered - recorded, sorted(named ^ (delivered - recorded))
+            assert not recorded, sorted(recorded)
+            # Giving up on the drain must still leave a clean loop thread: close()
+            # clears _loop as soon as its join budget expires, so teardown that reads
+            # self._loop would crash with the loop left open.
+            projector.release.set()
+            loop_thread.join(timeout=30)
+            assert not loop_thread.is_alive(), "loop thread never finished teardown"
+            assert loop.is_closed(), "loop thread teardown left the loop open"
+    finally:
+        projector.release.set()   # never leave the drain's threads blocked
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Item 2 — the request/injected/fail_open counters were plain dict increments
+# ("counters[k] += 1"), which is a read-modify-write and therefore loses updates
+# when handler threads interleave: 200 concurrent requests could report fewer.
+# --------------------------------------------------------------------------- #
+class _FailingContextProjector(Projector):
+    """Every context build raises, so all traffic takes the fail-open branch."""
+
+    async def build_context(self, user_text, session_id="default"):
+        raise RuntimeError("context exploded")
+
+
+@pytest.mark.parametrize("outcome", ["injected", "fail_open"])
+def test_gateway_concurrent_counters_are_exact(tmp_path, outcome):
+    """200 simultaneous requests must leave the counters at exactly 200.
+
+    ``outcome`` picks which counter the burst drives: normal traffic increments
+    ``injected``, a projector that always raises increments ``fail_open`` instead -
+    either way one request must account for exactly one increment, and the other
+    one must stay at zero. Counting is what an operator reads to know how much the
+    gateway actually did, so a lost increment is a wrong answer, not a rounding error.
+    """
+    n = 200
+    upstream = _fake_upstream()
+    config = _config()
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    projector = _projector(tmp_path, projector_cls=_FailingContextProjector) \
+        if outcome == "fail_open" else _seeded_projector(tmp_path, "counter", "x", "y")
+    server = create_server(config, projector=projector, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        # Warm-up first: the first request of a fresh gateway pays for the loop thread,
+        # the SQLite schema and the session's first index, and 199 queued clients can
+        # time out behind that without the counters being wrong. The burst is measured
+        # as a delta from here so the warm-up's own increments cannot hide a loss.
+        _request(base, {"model": "x", "user": "counter",
+                        "messages": [{"role": "user", "content": "warm up"}]}).read()
+        before = server.gateway.counter_snapshot()
+        errors, codes = _concurrent_requests(base, n, "counter", "hello there")
+        gateway = server.gateway
+        counts = {name: value - before[name]
+                  for name, value in gateway.counter_snapshot().items()}
+        print("COUNTERS outcome=%s errors=%d codes=%d counts=%s"
+              % (outcome, len(errors), len(codes), sorted(counts.items())))
+        assert not errors, errors[:8]
+        assert len(codes) == n and all(c == 200 for c in codes), codes[:8]
+        assert counts["requests"] == n, "requests lost increments: %s" % counts
+        assert counts[outcome] == n, "%s lost increments: %s" % (outcome, counts)
+        other = "fail_open" if outcome == "injected" else "injected"
+        assert counts[other] == 0, "%s incremented for %s traffic: %s" % (other, outcome, counts)
+        assert counts["skipped"] == 0, counts
+    finally:
+        server.shutdown(); server.server_close(); server.gateway.close()
+        upstream.shutdown(); upstream.server_close()
+
+
+def test_gateway_counter_bump_never_loses_an_increment(tmp_path):
+    """The counting primitive itself: 16 threads x 1000 bumps must land as 16000.
+
+    A 200-request HTTP burst puts one increment per request around milliseconds of
+    real work, so it can miss the read-modify-write window entirely; the primitive has
+    to be hammered directly to show the increments are atomic. Two names are driven at
+    once because the dict is the shared object here, not only the integers.
+    """
+    gateway = Gateway(_config(), projector=_projector(tmp_path))
+    threads, per = 16, 1000
+    names = ["requests", "injected"]
+    barrier = threading.Barrier(threads * len(names), timeout=60)
+
+    def hammer(name):
+        barrier.wait()
+        for _ in range(per):
+            gateway.bump(name)
+
+    pool = [threading.Thread(target=hammer, args=(names[i % len(names)],))
+            for i in range(threads * len(names))]
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for thread in pool:
+            thread.start()
+        for thread in pool:
+            thread.join(timeout=120)
+    finally:
+        sys.setswitchinterval(previous)
+    counts = gateway.counter_snapshot()
+    print("BUMP-CONTENTION counts=%s" % sorted(counts.items()))
+    assert not any(thread.is_alive() for thread in pool), "counter thread hung"
+    for name in names:
+        assert counts[name] == threads * per, "lost increments: %s" % counts
+        assert gateway.counters[name] == threads * per, name
+    assert gateway.counter("fail_open") == 0, counts
+    gateway.close()
+
 

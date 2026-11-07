@@ -221,10 +221,27 @@ def bm25_rank_facts(
             documents.append(kw_expanded)
 
     ranker = BM25Ranker(documents)
-    indices, scores = ranker.top_k(user_input, k=max(limit, len(facts)),
-                                    score_threshold=score_threshold)
+    scores = ranker.score_query(user_input)
+    # Deterministic tie-break: (score desc, keyword asc, index asc). The
+    # keyword is the stable fact id and is unique among a session's active
+    # facts, so this total order is independent of the row/recency order the
+    # facts were fetched in.
+    #
+    # DELIBERATE BEHAVIOR CHANGE: ties previously broke by document index,
+    # i.e. the last_accessed DESC row order, which made ranking depend on
+    # touch(). Both bm25_rank_facts and SessionFactIndex now tie-break by
+    # fact id so a cached index and a fresh ranking always agree.
+    order = sorted(
+        range(len(facts)),
+        key=lambda i: (-scores[i], facts[i][0], i),
+    )
     results = []
-    for idx, score in zip(indices, scores):
-        kw, val, tok = facts[idx]
+    for i in order:
+        score = scores[i]
+        if score <= score_threshold:
+            continue
+        kw, val, tok = facts[i]
         results.append((score, kw, val, tok))
-    return results[:limit]
+        if len(results) >= limit:
+            break
+    return results
