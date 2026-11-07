@@ -12,7 +12,7 @@
 [![Zero dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](https://pypi.org/project/cyrrus/)
 
 ```bash
-pip install cyrrus
+pip install --pre cyrrus
 ```
 
 </div>
@@ -287,8 +287,8 @@ reply = bot.ask("hello")
 ## Install
 
 ```bash
-pip install cyrrus                # core — zero dependencies
-pip install cyrrus[embeddings]    # + semantic routing and memory
+pip install --pre cyrrus                   # core — zero dependencies
+pip install --pre "cyrrus[embeddings]"     # + semantic routing and memory
 ```
 
 ```python

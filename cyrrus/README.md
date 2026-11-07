@@ -80,8 +80,8 @@ Numbers come from the benchmark in `devtools/bench`, which measures which facts 
 ## Install
 
 ```bash
-pip install cyrrus                  # core, zero dependencies
-pip install cyrrus[embeddings]      # + semantic routing and memory
+pip install --pre cyrrus                   # core, zero dependencies
+pip install --pre "cyrrus[embeddings]"     # + semantic routing and memory
 ```
 
 Python 3.9 to 3.13 are tested in CI.
