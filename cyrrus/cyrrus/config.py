@@ -56,6 +56,14 @@ DEFAULTS = {
         "api_key_env": None,
         "upstream_timeout": 60.0,
     },
+    # Plugin slot selection. None means "use the built-in default", so a
+    # zero-config install needs no entry points and no extras. Names not in
+    # the built-in set are looked up in the "cyrrus.plugins" entry-point group.
+    "plugins": {
+        "retriever": None,
+        "packer": None,
+        "backend": None,
+    },
 }
 
 
@@ -244,6 +252,20 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("gateway.api_key_env must be a string or null")
     if not isinstance(gateway.get("upstream_timeout"), (int, float)) or gateway["upstream_timeout"] <= 0:
         raise ValueError("gateway.upstream_timeout must be positive")
+
+    # Validate plugins section
+    if "plugins" in normalized:
+        plugins = normalized["plugins"]
+        if not isinstance(plugins, dict):
+            raise ValueError("plugins must be a dict")
+        for slot in ("retriever", "packer", "backend"):
+            value = plugins.get(slot)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "plugins.%s must be a non-empty string or null" % slot
+                )
 
     return normalized
 

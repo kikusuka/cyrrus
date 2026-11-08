@@ -14,6 +14,13 @@ from . import providers
 from .backend import MemoryBackend
 from .sqlite_backend import SQLiteBackend, get_backend, close_backend
 from .renderers import compact
+from .plugins import (
+    BM25Retriever,
+    Packer,
+    Retriever,
+    list_plugins,
+    resolve_plugin,
+)
 
 __version__ = "0.3.0b6"
 
@@ -39,6 +46,11 @@ __all__ = [
     "SQLiteBackend",
     "get_backend",
     "close_backend",
+    "Retriever",
+    "Packer",
+    "BM25Retriever",
+    "resolve_plugin",
+    "list_plugins",
     "estimate_tokens",
     "compact",
     "__version__",

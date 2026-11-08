@@ -430,6 +430,7 @@ class Gateway:
             trace_values=memory.get("trace_values", False),
             min_relative_score=memory.get("min_relative_score", 0.5),
             max_df_fraction=memory.get("max_df_fraction", 0.5),
+            plugins=self.config.get("plugins") or {},
         )
 
     def _secret(self, env_name):

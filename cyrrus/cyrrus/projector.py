@@ -260,6 +260,7 @@ class Projector:
         trace_values: Optional[bool] = None,
         min_relative_score: Optional[float] = None,
         max_df_fraction: Optional[float] = None,
+        plugins: Optional[dict] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -323,6 +324,26 @@ class Projector:
             )
         self.max_df_fraction = float(max_df_fraction)
 
+        if plugins is None:
+            plugins = {}
+        if not isinstance(plugins, dict):
+            raise TypeError("plugins must be a dict of slot names to plugin names")
+        self.plugins = dict(plugins)
+        retriever_name = self.plugins.get("retriever")
+        packer_name = self.plugins.get("packer")
+        backend_name = self.plugins.get("backend")
+        for slot, value in (
+            ("retriever", retriever_name),
+            ("packer", packer_name),
+            ("backend", backend_name),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "plugins.%s must be a non-empty string or None" % slot
+                )
+
         lamp_data = slides_config["core_lamp"]
         self.lamp = Slide(
             id="core_lamp",
@@ -335,6 +356,15 @@ class Projector:
         self.router = router or IntentRouter(slides_config)
         if memory_db_path is None:
             memory_db_path = default_db_path()
+
+        backend_plugin = None
+        if backend_name:
+            from .plugins import resolve_plugin
+
+            backend_plugin = resolve_plugin(
+                "backend", backend_name, {"db_path": memory_db_path}
+            )
+
         self.memory = memory or MemoryVault(
             db_path=memory_db_path,
             max_facts_per_session=memory_max_facts_per_session,
@@ -343,6 +373,8 @@ class Projector:
             trace_values=self.trace_values,
             min_relative_score=self.min_relative_score,
             max_df_fraction=self.max_df_fraction,
+            backend=backend_plugin,
+            retriever=retriever_name,
         )
         if memory is not None and hasattr(memory, "trace_values"):
             memory.trace_values = self.trace_values
@@ -350,7 +382,27 @@ class Projector:
             memory.min_relative_score = self.min_relative_score
         if memory is not None and hasattr(memory, "max_df_fraction"):
             memory.max_df_fraction = self.max_df_fraction
-        self.knapsack = knapsack or TokenKnapsack()
+        if (
+            memory is not None
+            and retriever_name
+            and hasattr(memory, "_retriever")
+        ):
+            from .plugins import resolve_plugin
+
+            memory._retriever = resolve_plugin(
+                "retriever",
+                retriever_name,
+                {"max_df_fraction": self.max_df_fraction},
+            )
+
+        if knapsack is not None:
+            self.knapsack = knapsack
+        elif packer_name:
+            from .plugins import resolve_plugin
+
+            self.knapsack = resolve_plugin("packer", packer_name)
+        else:
+            self.knapsack = TokenKnapsack()
 
         self.last_stats = {}
         self.last_trace = _CallableTrace()

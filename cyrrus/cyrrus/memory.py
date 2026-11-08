@@ -49,6 +49,7 @@ class MemoryVault:
         min_relative_score: float = 0.5,
         pinned_keys: Optional[Iterable[str]] = None,
         max_df_fraction: float = 0.5,
+        retriever: object = None,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
@@ -60,6 +61,27 @@ class MemoryVault:
         self.pinned_keys = set(pinned_keys or ())
         self.max_df_fraction = float(max_df_fraction)
         self.last_retrieval_trace: Optional[Trace] = None
+
+        # Optional Retriever plugin. None keeps the backend's indexed BM25
+        # path (the zero-config default). A string is resolved through the
+        # "cyrrus.plugins" group; an object is used as-is.
+        if isinstance(retriever, str):
+            from .plugins import resolve_plugin
+
+            self._retriever = resolve_plugin(
+                "retriever",
+                retriever,
+                {"max_df_fraction": self.max_df_fraction},
+            )
+        else:
+            self._retriever = retriever
+        if self._retriever is not None and not callable(
+            getattr(self._retriever, "rank", None)
+        ):
+            raise TypeError(
+                "retriever must define rank(facts, query, limit=..., "
+                "score_threshold=...)"
+            )
 
         # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
         # Only load an embedding model if the caller explicitly passes
@@ -166,25 +188,15 @@ class MemoryVault:
                 else float(max_df_fraction)
             )
             fetch_limit = limit + len(pins)
-            try:
-                ranked, dropped, explained, term_meta = (
-                    await self._backend.retrieve_ranked(
-                        session_id,
-                        user_input,
-                        limit=fetch_limit,
-                        score_threshold=0.0,
-                        explain=True,
-                        max_df_fraction=df_limit,
-                        remove_stopwords=True,
-                        with_terms=True,
-                    )
+            if self._retriever is not None:
+                # Explicit Retriever plugin: fetch active facts and let the
+                # plugin rank them. The default backend path stays indexed.
+                rows = await self._backend.retrieve_current(
+                    session_id, limit=None
                 )
-            except TypeError:
-                # Backend predates the explain/term-weighting kwargs.  Rank
-                # normally and synthesize the bounded candidate list.
                 try:
-                    ranked, dropped = await self._backend.retrieve_ranked(
-                        session_id,
+                    ranked = self._retriever.rank(
+                        rows,
                         user_input,
                         limit=fetch_limit,
                         score_threshold=0.0,
@@ -192,12 +204,15 @@ class MemoryVault:
                         remove_stopwords=True,
                     )
                 except TypeError:
-                    ranked, dropped = await self._backend.retrieve_ranked(
-                        session_id,
+                    # Older/simpler plugins may not accept tuning kwargs.
+                    ranked = self._retriever.rank(
+                        rows,
                         user_input,
                         limit=fetch_limit,
                         score_threshold=0.0,
                     )
+                ranked = [tuple(row) for row in ranked]
+                dropped = []
                 explained = []
                 for pos, (score, kw, val, tok) in enumerate(ranked):
                     explained.append(
@@ -206,6 +221,47 @@ class MemoryVault:
                         else (score, kw, val, tok, False, "below_limit")
                     )
                 term_meta = {}
+            else:
+                try:
+                    ranked, dropped, explained, term_meta = (
+                        await self._backend.retrieve_ranked(
+                            session_id,
+                            user_input,
+                            limit=fetch_limit,
+                            score_threshold=0.0,
+                            explain=True,
+                            max_df_fraction=df_limit,
+                            remove_stopwords=True,
+                            with_terms=True,
+                        )
+                    )
+                except TypeError:
+                    # Backend predates the explain/term-weighting kwargs.  Rank
+                    # normally and synthesize the bounded candidate list.
+                    try:
+                        ranked, dropped = await self._backend.retrieve_ranked(
+                            session_id,
+                            user_input,
+                            limit=fetch_limit,
+                            score_threshold=0.0,
+                            max_df_fraction=df_limit,
+                            remove_stopwords=True,
+                        )
+                    except TypeError:
+                        ranked, dropped = await self._backend.retrieve_ranked(
+                            session_id,
+                            user_input,
+                            limit=fetch_limit,
+                            score_threshold=0.0,
+                        )
+                    explained = []
+                    for pos, (score, kw, val, tok) in enumerate(ranked):
+                        explained.append(
+                            (score, kw, val, tok, True, None)
+                            if pos < limit
+                            else (score, kw, val, tok, False, "below_limit")
+                        )
+                    term_meta = {}
             if term_meta:
                 trace_obj.terms.update(term_meta)
             self._last_retrieve_dropped_below_threshold = list(dropped)
