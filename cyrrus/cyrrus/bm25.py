@@ -19,15 +19,47 @@ import re
 from typing import List, Tuple, Sequence, Dict, Set
 
 
-# Query-side stopwords; rare ones are restored only if df-pruning empties the query.
+# Query-side stopwords, dropped before ranking. Rare ones (see
+# _RARE_STOPWORD_FRACTION) are restored if df-pruning empties the query; all
+# are restored if even that matches nothing.
 STOPWORDS = frozenset("""
 a an and are as at be been but by do does for from had has have i if in into
 is it its me my of on or our she that the their them then there these they
 this to was we were what when where which who why will with you your
 """.split())
 
-# Below this df fraction a stopword still discriminates, so the fallback keeps it.
+# Below this df fraction a stopword still discriminates, so the fallback keeps
+# it (near_dup's "i": df 1 of 31). Existing threshold, reused not newly added.
 _RARE_STOPWORD_FRACTION = 0.1
+
+
+def _prune_high_df(base, df, corpus_size, max_df_fraction):
+    """Split ``base`` into (kept, high_df) using the df/fraction cutoff.
+
+    Terms seen in at least ``max_df_fraction`` of the corpus are treated as
+    filler; the split is returned unchanged when pruning is disabled or the
+    fraction is out of range.
+    """
+    if not (
+        corpus_size > 0
+        and max_df_fraction is not None
+        and 0 <= max_df_fraction < 1.0
+    ):
+        return base, []
+    cutoff = max_df_fraction * corpus_size
+    kept = []
+    high_df = []
+    for term in base:
+        freq = df.get(term, 0)
+        if freq > 0 and freq >= cutoff:
+            high_df.append(term)
+        else:
+            kept.append(term)
+    return kept, high_df
+
+
+def _matches_any(terms, df):
+    return any(df.get(term, 0) > 0 for term in terms)
 
 
 def _select_query_terms(
@@ -39,12 +71,16 @@ def _select_query_terms(
 ):
     """Choose the query terms that carry ranking signal.
 
-    Stopwords are removed first, then terms present in at least
-    ``max_df_fraction`` of the corpus are pruned as filler.  If pruning would
-    leave no matching term, the pruned terms are restored but stopword removal
-    is kept -- except rare stopwords (df/corpus < _RARE_STOPWORD_FRACTION),
-    which still discriminate.  A query that is all stopwords is returned
-    unchanged.
+    Stopwords are removed first, then content terms seen in at least
+    ``max_df_fraction`` of the corpus are pruned as filler.  A query made only
+    of stopwords is returned unchanged.  If pruning would leave no matching
+    content term, the pruned high-df terms are restored and stopword removal is
+    kept -- except rare stopwords (df/corpus < _RARE_STOPWORD_FRACTION), which
+    still discriminate (near_dup's "i").  If, even then, NO selected term
+    matches any document -- stopword removal stripped the only informative term,
+    as in "do I have children" against "I have two kids" -- the query is retried
+    with all stopwords restored and the same pruning applied.  No new threshold
+    is introduced.
 
     Returns (selected, stopwords, high_df, fallback).
     """
@@ -54,30 +90,26 @@ def _select_query_terms(
     if not base:
         return raw, stopwords, [], True
 
-    high_df = []
-    if (
-        corpus_size > 0
-        and max_df_fraction is not None
-        and 0 <= max_df_fraction < 1.0
-    ):
-        cutoff = max_df_fraction * corpus_size
-        kept = []
-        for term in base:
-            freq = df.get(term, 0)
-            if freq > 0 and freq >= cutoff:
-                high_df.append(term)
-            else:
-                kept.append(term)
-        if kept and any(df.get(term, 0) > 0 for term in kept):
-            return kept, stopwords, high_df, False
-        # Undo pruning but keep stopword removal; restore only rare stopwords.
-        rare = [t for t in stopwords
-                if df.get(t, 0) > 0
-                and df[t] / corpus_size < _RARE_STOPWORD_FRACTION]
-        fallback_terms = [t for t in raw if t in base or t in rare]
-        return fallback_terms, stopwords, high_df, True
+    kept, high_df = _prune_high_df(base, df, corpus_size, max_df_fraction)
+    if kept and _matches_any(kept, df):
+        return kept, stopwords, high_df, False
 
-    return base, stopwords, high_df, False
+    # Undo pruning but keep stopword removal; restore only rare stopwords.
+    rare = [t for t in stopwords
+            if df.get(t, 0) > 0
+            and df[t] / corpus_size < _RARE_STOPWORD_FRACTION]
+    fallback_terms = [t for t in raw if t in base or t in rare]
+
+    # Nothing matches even after that: stopword removal stripped the only
+    # informative term. Retry with all stopwords restored, pruning unchanged.
+    if not _matches_any(fallback_terms, df):
+        full_kept, full_high = _prune_high_df(
+            raw, df, corpus_size, max_df_fraction
+        )
+        if _matches_any(full_kept, df):
+            return full_kept, stopwords, full_high, True
+
+    return fallback_terms, stopwords, high_df, True
 
 
 class BM25Ranker:
