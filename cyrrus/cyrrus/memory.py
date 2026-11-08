@@ -50,6 +50,7 @@ class MemoryVault:
         pinned_keys: Optional[Iterable[str]] = None,
         max_df_fraction: float = 0.5,
         retriever: object = None,
+        retriever_config: Optional[dict] = None,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
@@ -68,10 +69,14 @@ class MemoryVault:
         if isinstance(retriever, str):
             from .plugins import resolve_plugin
 
+            plugin_config = dict(retriever_config or {})
+            plugin_config.setdefault("max_df_fraction", self.max_df_fraction)
+            if db_path:
+                plugin_config.setdefault("db_path", db_path)
             self._retriever = resolve_plugin(
                 "retriever",
                 retriever,
-                {"max_df_fraction": self.max_df_fraction},
+                plugin_config,
             )
         else:
             self._retriever = retriever

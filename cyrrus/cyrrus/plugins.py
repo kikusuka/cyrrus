@@ -125,7 +125,7 @@ def _iter_entry_points(group: str = PLUGIN_GROUP):
 
 def list_plugins(group: str = PLUGIN_GROUP) -> List[str]:
     """Return built-in and entry-point plugin names, sorted and de-duplicated."""
-    names = {"bm25", "token_knapsack", "sqlite"}
+    names = {"bm25", "hybrid", "token_knapsack", "sqlite"}
     for ep in _iter_entry_points(group):
         names.add(ep.name)
     return sorted(names)
@@ -180,6 +180,10 @@ def _check_contract(kind: str, plugin: Any) -> None:
 def _builtin(kind: str, name: str, config: Dict[str, Any]) -> Optional[Any]:
     if kind == "retriever" and name == "bm25":
         return BM25Retriever()
+    if kind == "retriever" and name == "hybrid":
+        from .hybrid import HybridRetriever
+
+        return HybridRetriever.from_config(config)
     if kind == "packer" and name == "token_knapsack":
         from .knapsack import TokenKnapsack
 

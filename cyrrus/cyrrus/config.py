@@ -10,6 +10,8 @@ import sys
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
+from . import plugins as plugin_module
+
 
 # Default configuration values
 DEFAULTS = {
@@ -266,6 +268,15 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 raise ValueError(
                     "plugins.%s must be a non-empty string or null" % slot
                 )
+        # Validate known plugin names for each slot
+            available = plugin_module.list_plugins()
+            for slot in ("retriever", "packer", "backend"):
+                value = plugins.get(slot)
+                if value is not None and value not in available:
+                    raise ValueError(
+                        "plugins.%s=%r is not a known plugin. Available: %s"
+                        % (slot, value, ", ".join(available))
+                    )
 
     return normalized
 
