@@ -584,6 +584,7 @@ class SQLiteBackend(MemoryBackend):
         user_input: str,
         limit: int = 3,
         score_threshold: float = 0.0,
+        explain: bool = False,
     ):
         """BM25-rank all active facts for a session using a cached
         per-session inverted index.
@@ -592,13 +593,19 @@ class SQLiteBackend(MemoryBackend):
         retrieve_current(limit=None). The index is rebuilt only when the
         session's facts change (writes invalidate it directly; writes from
         other processes/connections are detected via PRAGMA data_version).
+
+        ``explain=True`` adds a bounded, score-ordered candidate list for
+        tracing (see :meth:`SessionFactIndex.rank`).
         """
         validate_session_id(session_id)
 
         def _work(conn):
             index = self._get_or_build_index(conn, session_id)
             return index.rank(
-                user_input, limit=limit, score_threshold=score_threshold
+                user_input,
+                limit=limit,
+                score_threshold=score_threshold,
+                explain=explain,
             )
 
         return await self._execute_with_retry(_work)

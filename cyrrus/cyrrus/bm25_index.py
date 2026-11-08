@@ -18,6 +18,7 @@ from typing import Dict, List, Sequence, Tuple
 from .bm25 import _expand_keyword_with_aliases
 
 _DROP_CAP = 100
+_TRACE_CAP = 100
 
 
 def _tokenize(text: str) -> List[str]:
@@ -96,7 +97,8 @@ class SessionFactIndex:
         user_input: str,
         limit: int = 3,
         score_threshold: float = 0.0,
-    ) -> Tuple[List[Tuple[float, str, str, int]], List[Dict[str, str]]]:
+        explain: bool = False,
+    ):
         """Rank facts against user_input.
 
         Returns (ranked, dropped) where ranked is a list of
@@ -104,9 +106,14 @@ class SessionFactIndex:
         bm25_rank_facts(facts, user_input, limit, score_threshold) — and
         dropped is a capped list of {"key": kw, "reason": "below threshold"}
         for facts not included in ranked.
+
+        With ``explain=True`` a third list is returned: ranked candidates in
+        score order as (score, keyword, value, tokens, included,
+        dropped_reason), capped at limit + 100.  The first ``limit`` entries
+        are included; the rest were ranked below the injection cap.
         """
         if self.corpus_size == 0:
-            return [], []
+            return ([], [], []) if explain else ([], [])
 
         query_terms = _tokenize(user_input)
 
@@ -147,18 +154,19 @@ class SessionFactIndex:
             idx, score = item
             return (-score, facts[idx][0], idx)
 
-        if len(filtered) > limit:
-            top = heapq.nsmallest(limit, filtered, key=_key)
+        take = limit + _TRACE_CAP if explain else limit
+        if len(filtered) > take:
+            top = heapq.nsmallest(take, filtered, key=_key)
         else:
             filtered.sort(key=_key)
             top = filtered
 
         ranked_out = []
-        for idx, score in top:
+        for idx, score in top[:limit]:
             kw, val, tok = self.facts[idx]
             ranked_out.append((score, kw, val, tok))
 
-        included = {idx for idx, _ in top}
+        included = {idx for idx, _ in top[:limit]}
         dropped = []
         for idx, (kw, _v, _t) in enumerate(self.facts):
             if idx in included:
@@ -166,4 +174,15 @@ class SessionFactIndex:
             dropped.append({"key": kw, "reason": "below threshold"})
             if len(dropped) >= _DROP_CAP:
                 break
+        if explain:
+            explained = []
+            for pos, (idx, score) in enumerate(top):
+                kw, val, tok = self.facts[idx]
+                if pos < limit:
+                    explained.append((score, kw, val, tok, True, None))
+                else:
+                    explained.append(
+                        (score, kw, val, tok, False, "below_limit")
+                    )
+            return ranked_out, dropped, explained
         return ranked_out, dropped

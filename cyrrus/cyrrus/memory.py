@@ -8,6 +8,7 @@ from .data import Slide
 from .backend import MemoryBackend, validate_session_id, validate_keyword
 from .sqlite_backend import SQLiteBackend, default_db_path
 from .bm25 import bm25_rank_facts
+from .trace import Trace
 
 log = logging.getLogger("cyrrus.memory")
 
@@ -44,12 +45,15 @@ class MemoryVault:
         embedding_model: Optional[str] = None,
         embedding_min_score: float = 0.68,
         backend: Optional[MemoryBackend] = None,
+        trace_values: bool = False,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
         self._embedder = embedder
         self._np = None
         self._embedding_min_score = embedding_min_score
+        self.trace_values = trace_values
+        self.last_retrieval_trace: Optional[Trace] = None
 
         # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
         # Only load an embedding model if the caller explicitly passes
@@ -113,29 +117,55 @@ class MemoryVault:
             self.max_fact_value_length
         )
 
-    async def retrieve(self, session_id: str, user_input: str, limit: int = 3) -> list:
+    async def retrieve(
+        self,
+        session_id: str,
+        user_input: str,
+        limit: int = 3,
+        trace: Optional[Trace] = None,
+    ) -> list:
         # Legacy contract (tests/test_failsafe.py::test_isolation): reading with a
         # falsy session id returns no facts instead of raising. Writes stay strict.
         if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
             return []
         validate_session_id(session_id)
+        trace_obj = trace if trace is not None else Trace(
+            session_id=session_id, include_values=self.trace_values
+        )
+        trace_obj.session_id = session_id
         await self._ensure_initialized()
 
         if self._embedder is not None and self._np is not None:
             # Semantic path needs every active fact for the embedding pass.
             rows = await self._backend.retrieve_current(session_id, limit=None)
             if not rows:
+                self.last_retrieval_trace = trace_obj
                 return []
-            slides = await self._semantic_retrieve(rows, user_input, limit)
+            slides = await self._semantic_retrieve(
+                rows, user_input, limit, trace=trace_obj
+            )
         else:
             # Keyword path: rank via the backend (per-session inverted index
             # in SQLiteBackend). Rankings are identical to bm25_rank_facts
             # over ALL active facts (limit=None), but without re-scanning
             # and re-ranking the whole corpus on every call.
-            ranked, dropped = await self._backend.retrieve_ranked(
-                session_id, user_input, limit=limit, score_threshold=0.0
+            ranked, dropped, explained = await self._backend.retrieve_ranked(
+                session_id,
+                user_input,
+                limit=limit,
+                score_threshold=0.0,
+                explain=True,
             )
             self._last_retrieve_dropped_below_threshold = dropped
+            for score, kw, val, tok, included, drop_reason in explained:
+                trace_obj.add_fact(
+                    kw,
+                    score,
+                    val,
+                    included,
+                    reason="included" if included else None,
+                    dropped_reason=drop_reason,
+                )
             slides = [
                 Slide(
                     id=f"mem_{kw}",
@@ -147,20 +177,27 @@ class MemoryVault:
                 for _, kw, val, tok in ranked
             ]
 
+        self.last_retrieval_trace = trace_obj
         if slides:
             touched = [s.id.replace("mem_", "") for s in slides]
             await self._backend.touch(session_id, touched)
 
         return slides
 
-    async def _semantic_retrieve(self, rows: list, user_input: str, limit: int) -> list:
+    async def _semantic_retrieve(
+        self, rows: list, user_input: str, limit: int, trace: Optional[Trace] = None
+    ) -> list:
         try:
             # --- Pass 1: keyword/alias (BM25) matches first ---
             keyword_ranked = bm25_rank_facts(rows, user_input, limit=limit, score_threshold=0.0)
             keyword_kws = {kw for _, kw, _, _ in keyword_ranked}
 
             keyword_slides = []
-            for _, kw, val, tok in keyword_ranked:
+            for score, kw, val, tok in keyword_ranked:
+                if trace is not None:
+                    trace.add_fact(
+                        kw, score, val, True, reason="included"
+                    )
                 keyword_slides.append(Slide(
                     id=f"mem_{kw}",
                     type="memory",
@@ -195,6 +232,10 @@ class MemoryVault:
                 for idx, score in enumerate(scores):
                     kw, val, tok = remaining_rows[idx]
                     if score >= self._embedding_min_score:
+                        if trace is not None:
+                            trace.add_fact(
+                                kw, float(score), val, True, reason="included"
+                            )
                         embedding_slides.append(Slide(
                             id=f"mem_{kw}",
                             type="memory",
@@ -203,6 +244,14 @@ class MemoryVault:
                             priority=800,
                         ))
                     else:
+                        if trace is not None:
+                            trace.add_fact(
+                                kw,
+                                float(score),
+                                val,
+                                False,
+                                dropped_reason="below_threshold",
+                            )
                         dropped.append({"key": kw, "reason": "below threshold"})
 
             # Combine: keyword matches first, then embedding matches.
