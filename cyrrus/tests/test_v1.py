@@ -1014,6 +1014,9 @@ async def test_integration_fact_labels_default_and_compact(tmp_path):
                 llm_call=fake_llm,
                 renderer=renderer,
                 memory_db_path=str(tmp_path / f"labels_{db_suffix}.db"),
+                # This test checks fact labels, not selective injection: keep
+                # every retrieved fact so all three labels are rendered.
+                min_relative_score=0.0,
             )
 
         turns = [

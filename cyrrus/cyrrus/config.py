@@ -25,6 +25,9 @@ DEFAULTS = {
         "retrieval": "keyword",  # "keyword" or "hybrid"
         "max_facts_per_session": 50,
         "embedding_min_score": 0.7,
+        # Fact injection floor relative to the best BM25 score. Candidates
+        # below min_relative_score * top_score are dropped (top-1 is kept).
+        "min_relative_score": 0.5,
         # Include fact values in traces. Off by default: traces are prompt-safe.
         "trace_values": False,
         # Number of most-recently-used sessions whose retrieval index the
@@ -185,6 +188,10 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
                 raise ValueError("memory.embedding_min_score must be a number between 0 and 1")
         if "trace_values" in memory and not isinstance(memory["trace_values"], bool):
             raise ValueError("memory.trace_values must be a boolean")
+        if "min_relative_score" in memory and memory["min_relative_score"] is not None:
+            value = memory["min_relative_score"]
+            if not isinstance(value, (int, float)) or not (0 <= value <= 1):
+                raise ValueError("memory.min_relative_score must be a number between 0 and 1")
         if "warmup_sessions" in memory and memory["warmup_sessions"] is not None:
             if not isinstance(memory["warmup_sessions"], int) or memory["warmup_sessions"] < 0:
                 raise ValueError("memory.warmup_sessions must be a non-negative integer")

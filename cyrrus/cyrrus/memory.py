@@ -3,7 +3,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterable
 from .data import Slide
 from .backend import MemoryBackend, validate_session_id, validate_keyword
 from .sqlite_backend import SQLiteBackend, default_db_path
@@ -46,6 +46,8 @@ class MemoryVault:
         embedding_min_score: float = 0.68,
         backend: Optional[MemoryBackend] = None,
         trace_values: bool = False,
+        min_relative_score: float = 0.5,
+        pinned_keys: Optional[Iterable[str]] = None,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
@@ -53,6 +55,8 @@ class MemoryVault:
         self._np = None
         self._embedding_min_score = embedding_min_score
         self.trace_values = trace_values
+        self.min_relative_score = float(min_relative_score)
+        self.pinned_keys = set(pinned_keys or ())
         self.last_retrieval_trace: Optional[Trace] = None
 
         # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
@@ -123,6 +127,7 @@ class MemoryVault:
         user_input: str,
         limit: int = 3,
         trace: Optional[Trace] = None,
+        pinned_keys: Optional[Iterable[str]] = None,
     ) -> list:
         # Legacy contract (tests/test_failsafe.py::test_isolation): reading with a
         # falsy session id returns no facts instead of raising. Writes stay strict.
@@ -149,21 +154,69 @@ class MemoryVault:
             # in SQLiteBackend). Rankings are identical to bm25_rank_facts
             # over ALL active facts (limit=None), but without re-scanning
             # and re-ranking the whole corpus on every call.
-            ranked, dropped, explained = await self._backend.retrieve_ranked(
-                session_id,
-                user_input,
-                limit=limit,
-                score_threshold=0.0,
-                explain=True,
+            pins = set(self.pinned_keys)
+            if pinned_keys:
+                pins.update(pinned_keys)
+            fetch_limit = limit + len(pins)
+            try:
+                ranked, dropped, explained = await self._backend.retrieve_ranked(
+                    session_id,
+                    user_input,
+                    limit=fetch_limit,
+                    score_threshold=0.0,
+                    explain=True,
+                )
+            except TypeError:
+                # Backend predates the explain kwarg.  Rank normally and
+                # synthesize the bounded candidate list from its result.
+                ranked, dropped = await self._backend.retrieve_ranked(
+                    session_id,
+                    user_input,
+                    limit=fetch_limit,
+                    score_threshold=0.0,
+                )
+                explained = []
+                for pos, (score, kw, val, tok) in enumerate(ranked):
+                    explained.append(
+                        (score, kw, val, tok, True, None)
+                        if pos < limit
+                        else (score, kw, val, tok, False, "below_limit")
+                    )
+            self._last_retrieve_dropped_below_threshold = list(dropped)
+            top_score = ranked[0][0] if ranked else 0.0
+            floor = (
+                top_score * self.min_relative_score if top_score > 0 else None
             )
-            self._last_retrieve_dropped_below_threshold = dropped
+            kept = []
+            floor_dropped = []
+            for pos, row in enumerate(ranked):
+                score, kw, _val, _tok = row
+                if pos == 0 or (floor is not None and score >= floor) or kw in pins:
+                    kept.append(row)
+                else:
+                    floor_dropped.append(
+                        {"key": kw, "reason": "below_relative_floor"}
+                    )
+            self._last_retrieve_dropped_below_threshold.extend(floor_dropped)
+            kept_keys = {row[1] for row in kept}
             for score, kw, val, tok, included, drop_reason in explained:
+                if included and kw not in kept_keys:
+                    included = False
+                    drop_reason = "below_relative_floor"
+                elif not included and floor is not None and score < floor:
+                    drop_reason = "below_relative_floor"
+                elif included and kw in pins and score < (floor or 0):
+                    drop_reason = None
                 trace_obj.add_fact(
                     kw,
                     score,
                     val,
                     included,
-                    reason="included" if included else None,
+                    reason=(
+                        "pinned"
+                        if included and kw in pins and score < (floor or 0)
+                        else ("included" if included else None)
+                    ),
                     dropped_reason=drop_reason,
                 )
             slides = [
@@ -174,7 +227,7 @@ class MemoryVault:
                     tokens=tok,
                     priority=800,
                 )
-                for _, kw, val, tok in ranked
+                for _, kw, val, tok in kept
             ]
 
         self.last_retrieval_trace = trace_obj

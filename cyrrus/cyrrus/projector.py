@@ -258,6 +258,7 @@ class Projector:
         tokenizer: Optional[object] = None,
         renderer: Optional[object] = None,
         trace_values: Optional[bool] = None,
+        min_relative_score: Optional[float] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -310,6 +311,11 @@ class Projector:
                 slides_config.get("memory", {}).get("trace_values", False)
             )
         self.trace_values = bool(trace_values)
+        if min_relative_score is None:
+            min_relative_score = slides_config.get("memory", {}).get(
+                "min_relative_score", 0.5
+            )
+        self.min_relative_score = float(min_relative_score)
 
         lamp_data = slides_config["core_lamp"]
         self.lamp = Slide(
@@ -329,9 +335,12 @@ class Projector:
             max_fact_value_length=memory_max_fact_value_length,
             embedding_min_score=embedding_min_score,
             trace_values=self.trace_values,
+            min_relative_score=self.min_relative_score,
         )
         if memory is not None and hasattr(memory, "trace_values"):
             memory.trace_values = self.trace_values
+        if memory is not None and hasattr(memory, "min_relative_score"):
+            memory.min_relative_score = self.min_relative_score
         self.knapsack = knapsack or TokenKnapsack()
 
         self.last_stats = {}
