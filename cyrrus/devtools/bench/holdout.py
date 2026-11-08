@@ -33,6 +33,14 @@ CASES = [
   [("what do I like", ["pref_color","pref_food","pref_music","pref_sport"], []), ("what food do I like", ["pref_food"], [])]),
 ]
 
+# Generic self-description queries inject nothing (recall 0.0) on main and v8
+# alike -- measured, not a v8 regression. Shown as [known-weak]; out of scope to
+# fix here (the v8 defaults fix targets df-pruning, not generic-query recall).
+KNOWN_WEAK = {
+    ("multi_fact_6", "tell me about myself"),
+    ("multi_fact_6", "what do you know about me"),
+}
+
 async def run(kwargs):
     out = {}
     for name, facts, qs in CASES:
@@ -60,7 +68,8 @@ def main():
     print(f"# {cyrrus.__file__}  kwargs={kw}  (v8-only params present: {'min_relative_score' in sig})")
     tot = 0; n = 0
     for (name, q), (rec, ng, tok, got) in r.items():
-        print(f"{name:24s} rec={rec:.2f} n={ng} tok={tok:3d}  {q!r:50s} -> {got}")
+        mark = " [known-weak]" if (name, q) in KNOWN_WEAK else ""
+        print(f"{name:24s} rec={rec:.2f} n={ng} tok={tok:3d}  {q!r:50s} -> {got}{mark}")
         tot += rec; n += 1
     print(f"MEAN_RECALL={tot/n:.3f}")
 main()
