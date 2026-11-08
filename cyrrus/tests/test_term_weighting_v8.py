@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from cyrrus.bm25 import _select_query_terms
 from cyrrus.bm25_index import SessionFactIndex
 from cyrrus.config import validate_config
 from cyrrus.memory import MemoryVault
@@ -182,3 +183,43 @@ def test_worst_case_50k_query_median_p95_before_after(tmp_path):
         % (before_median, before_p95, after_median, after_p95)
     )
     assert after_median < before_median
+
+
+def test_pruning_fallback_keeps_stopwords_removed():
+    # "who owns the project": df-pruning drops "project" (df=3 of 3), the
+    # surviving "owns" matches nothing (df=0). The fallback must undo the
+    # df-pruning but KEEP stopword removal — restoring "who"/"the" lets
+    # project_name's "who am i" alias outrank the true project_owner, and the
+    # relative floor then drops project_owner.
+    df = {"who": 1, "owns": 0, "the": 3, "project": 3}
+    sel, stop, high, fb = _select_query_terms(
+        ["who", "owns", "the", "project"], df, 3,
+        max_df_fraction=0.5, remove_stopwords=True,
+    )
+    assert fb is True
+    assert high == ["project"]
+    assert set(stop) == {"who", "the"}
+    assert sel == ["owns", "project"], sel
+
+
+@pytest.mark.asyncio
+async def test_pruning_fallback_who_owns_the_project(tmp_path):
+    vault = MemoryVault(db_path=str(tmp_path / "owns.db"))
+    await vault.upsert("s", "project_name", "the Atlas project", 8)
+    await vault.upsert("s", "project_deadline", "the project is due friday", 8)
+    await vault.upsert("s", "project_owner", "the project owner is Sam", 8)
+    slides = await vault.retrieve("s", "who owns the project", limit=5)
+    got = [s.id[4:] for s in slides]
+    assert "project_owner" in got, got
+
+
+@pytest.mark.asyncio
+async def test_pruning_fallback_does_not_inflate_city_lookalikes(tmp_path):
+    vault = MemoryVault(db_path=str(tmp_path / "city.db"))
+    await vault.upsert("s", "user_city", "Lisbon", 8)
+    await vault.upsert("s", "friend_city", "my friend lives in a city called Madrid", 8)
+    await vault.upsert("s", "cousin_city", "my cousin lives in a city called Paris", 8)
+    await vault.upsert("s", "user_city", "Porto", 8)
+    slides = await vault.retrieve("s", "which city do I live in", limit=5)
+    got = [s.id[4:] for s in slides]
+    assert "user_city" in got, got

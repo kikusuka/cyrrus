@@ -19,13 +19,15 @@ import re
 from typing import List, Tuple, Sequence, Dict, Set
 
 
-# Query-side stopwords.  They are removed before scoring (and the original
-# query terms are restored verbatim if that would leave nothing to match).
+# Query-side stopwords; rare ones are restored only if df-pruning empties the query.
 STOPWORDS = frozenset("""
 a an and are as at be been but by do does for from had has have i if in into
 is it its me my of on or our she that the their them then there these they
 this to was we were what when where which who why will with you your
 """.split())
+
+# Below this df fraction a stopword still discriminates, so the fallback keeps it.
+_RARE_STOPWORD_FRACTION = 0.1
 
 
 def _select_query_terms(
@@ -37,10 +39,12 @@ def _select_query_terms(
 ):
     """Choose the query terms that carry ranking signal.
 
-    Terms present in at least ``max_df_fraction`` of the corpus are ignored
-    because they cannot separate relevant facts from filler.  Stopwords are
-    removed first.  If either step would leave no matching terms, the original
-    query terms are used unchanged (the historical behavior).
+    Stopwords are removed first, then terms present in at least
+    ``max_df_fraction`` of the corpus are pruned as filler.  If pruning would
+    leave no matching term, the pruned terms are restored but stopword removal
+    is kept -- except rare stopwords (df/corpus < _RARE_STOPWORD_FRACTION),
+    which still discriminate.  A query that is all stopwords is returned
+    unchanged.
 
     Returns (selected, stopwords, high_df, fallback).
     """
@@ -64,15 +68,14 @@ def _select_query_terms(
                 high_df.append(term)
             else:
                 kept.append(term)
-        if kept:
-            if any(df.get(term, 0) > 0 for term in kept):
-                return kept, stopwords, high_df, False
-            # The surviving terms match nothing in this corpus, so the
-            # selective filter would silently drop the only useful (high-df)
-            # term. Fall back to the historical query terms instead.
-            return raw, stopwords, high_df, True
-        # Every term was filtered: fall back to the historical behavior.
-        return raw, stopwords, high_df, True
+        if kept and any(df.get(term, 0) > 0 for term in kept):
+            return kept, stopwords, high_df, False
+        # Undo pruning but keep stopword removal; restore only rare stopwords.
+        rare = [t for t in stopwords
+                if df.get(t, 0) > 0
+                and df[t] / corpus_size < _RARE_STOPWORD_FRACTION]
+        fallback_terms = [t for t in raw if t in base or t in rare]
+        return fallback_terms, stopwords, high_df, True
 
     return base, stopwords, high_df, False
 
