@@ -429,6 +429,7 @@ class Gateway:
             embedding_min_score=memory.get("embedding_min_score", 0.68),
             trace_values=memory.get("trace_values", False),
             min_relative_score=memory.get("min_relative_score", 0.5),
+            max_df_fraction=memory.get("max_df_fraction", 0.5),
         )
 
     def _secret(self, env_name):

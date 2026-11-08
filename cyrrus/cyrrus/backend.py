@@ -104,6 +104,8 @@ class MemoryBackend(ABC):
         user_input: str,
         limit: int = 3,
         score_threshold: float = 0.0,
+        max_df_fraction: float = 0.5,
+        remove_stopwords: bool = True,
     ):
         """
         Retrieve the most relevant current facts for a session, ranked by
@@ -123,7 +125,12 @@ class MemoryBackend(ABC):
 
         rows = await self.retrieve_current(session_id, limit=None)
         ranked = bm25_rank_facts(
-            rows, user_input, limit=limit, score_threshold=score_threshold
+            rows,
+            user_input,
+            limit=limit,
+            score_threshold=score_threshold,
+            max_df_fraction=max_df_fraction,
+            remove_stopwords=remove_stopwords,
         )
         included = {kw for (_s, kw, _v, _t) in ranked}
         dropped: List[Dict[str, str]] = []

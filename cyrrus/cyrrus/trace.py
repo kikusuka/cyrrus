@@ -51,6 +51,7 @@ class Trace:
     session_id: Optional[str] = None
     include_values: bool = False
     candidates: List[Candidate] = field(default_factory=list)
+    terms: Dict[str, Any] = field(default_factory=dict)
 
     def add_fact(
         self,
@@ -96,4 +97,5 @@ class Trace:
         return {
             "session_id": self.session_id,
             "candidates": [c.to_dict(self.include_values) for c in self.candidates],
+            "terms": dict(self.terms),
         }

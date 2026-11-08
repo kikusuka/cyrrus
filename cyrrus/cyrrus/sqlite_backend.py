@@ -585,6 +585,9 @@ class SQLiteBackend(MemoryBackend):
         limit: int = 3,
         score_threshold: float = 0.0,
         explain: bool = False,
+        max_df_fraction: float = 0.5,
+        remove_stopwords: bool = True,
+        with_terms: bool = False,
     ):
         """BM25-rank all active facts for a session using a cached
         per-session inverted index.
@@ -606,6 +609,9 @@ class SQLiteBackend(MemoryBackend):
                 limit=limit,
                 score_threshold=score_threshold,
                 explain=explain,
+                max_df_fraction=max_df_fraction,
+                remove_stopwords=remove_stopwords,
+                with_terms=with_terms,
             )
 
         return await self._execute_with_retry(_work)

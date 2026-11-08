@@ -48,6 +48,7 @@ class MemoryVault:
         trace_values: bool = False,
         min_relative_score: float = 0.5,
         pinned_keys: Optional[Iterable[str]] = None,
+        max_df_fraction: float = 0.5,
     ):
         self.max_facts_per_session = max_facts_per_session
         self.max_fact_value_length = max_fact_value_length
@@ -57,6 +58,7 @@ class MemoryVault:
         self.trace_values = trace_values
         self.min_relative_score = float(min_relative_score)
         self.pinned_keys = set(pinned_keys or ())
+        self.max_df_fraction = float(max_df_fraction)
         self.last_retrieval_trace: Optional[Trace] = None
 
         # Embeddings are opt-in only.  Default retrieval is keyword (BM25).
@@ -128,6 +130,7 @@ class MemoryVault:
         limit: int = 3,
         trace: Optional[Trace] = None,
         pinned_keys: Optional[Iterable[str]] = None,
+        max_df_fraction: Optional[float] = None,
     ) -> list:
         # Legacy contract (tests/test_failsafe.py::test_isolation): reading with a
         # falsy session id returns no facts instead of raising. Writes stay strict.
@@ -157,24 +160,44 @@ class MemoryVault:
             pins = set(self.pinned_keys)
             if pinned_keys:
                 pins.update(pinned_keys)
+            df_limit = (
+                self.max_df_fraction
+                if max_df_fraction is None
+                else float(max_df_fraction)
+            )
             fetch_limit = limit + len(pins)
             try:
-                ranked, dropped, explained = await self._backend.retrieve_ranked(
-                    session_id,
-                    user_input,
-                    limit=fetch_limit,
-                    score_threshold=0.0,
-                    explain=True,
+                ranked, dropped, explained, term_meta = (
+                    await self._backend.retrieve_ranked(
+                        session_id,
+                        user_input,
+                        limit=fetch_limit,
+                        score_threshold=0.0,
+                        explain=True,
+                        max_df_fraction=df_limit,
+                        remove_stopwords=True,
+                        with_terms=True,
+                    )
                 )
             except TypeError:
-                # Backend predates the explain kwarg.  Rank normally and
-                # synthesize the bounded candidate list from its result.
-                ranked, dropped = await self._backend.retrieve_ranked(
-                    session_id,
-                    user_input,
-                    limit=fetch_limit,
-                    score_threshold=0.0,
-                )
+                # Backend predates the explain/term-weighting kwargs.  Rank
+                # normally and synthesize the bounded candidate list.
+                try:
+                    ranked, dropped = await self._backend.retrieve_ranked(
+                        session_id,
+                        user_input,
+                        limit=fetch_limit,
+                        score_threshold=0.0,
+                        max_df_fraction=df_limit,
+                        remove_stopwords=True,
+                    )
+                except TypeError:
+                    ranked, dropped = await self._backend.retrieve_ranked(
+                        session_id,
+                        user_input,
+                        limit=fetch_limit,
+                        score_threshold=0.0,
+                    )
                 explained = []
                 for pos, (score, kw, val, tok) in enumerate(ranked):
                     explained.append(
@@ -182,6 +205,9 @@ class MemoryVault:
                         if pos < limit
                         else (score, kw, val, tok, False, "below_limit")
                     )
+                term_meta = {}
+            if term_meta:
+                trace_obj.terms.update(term_meta)
             self._last_retrieve_dropped_below_threshold = list(dropped)
             top_score = ranked[0][0] if ranked else 0.0
             floor = (

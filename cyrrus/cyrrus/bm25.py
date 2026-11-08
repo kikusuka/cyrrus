@@ -19,6 +19,64 @@ import re
 from typing import List, Tuple, Sequence, Dict, Set
 
 
+# Query-side stopwords.  They are removed before scoring (and the original
+# query terms are restored verbatim if that would leave nothing to match).
+STOPWORDS = frozenset("""
+a an and are as at be been but by do does for from had has have i if in into
+is it its me my of on or our she that the their them then there these they
+this to was we were what when where which who why will with you your
+""".split())
+
+
+def _select_query_terms(
+    query_terms: Sequence[str],
+    df: Dict[str, int],
+    corpus_size: int,
+    max_df_fraction: float = 0.5,
+    remove_stopwords: bool = True,
+):
+    """Choose the query terms that carry ranking signal.
+
+    Terms present in at least ``max_df_fraction`` of the corpus are ignored
+    because they cannot separate relevant facts from filler.  Stopwords are
+    removed first.  If either step would leave no matching terms, the original
+    query terms are used unchanged (the historical behavior).
+
+    Returns (selected, stopwords, high_df, fallback).
+    """
+    raw = list(query_terms)
+    stopwords = [t for t in raw if remove_stopwords and t in STOPWORDS]
+    base = [t for t in raw if t not in STOPWORDS] if remove_stopwords else raw
+    if not base:
+        return raw, stopwords, [], True
+
+    high_df = []
+    if (
+        corpus_size > 0
+        and max_df_fraction is not None
+        and 0 <= max_df_fraction < 1.0
+    ):
+        cutoff = max_df_fraction * corpus_size
+        kept = []
+        for term in base:
+            freq = df.get(term, 0)
+            if freq > 0 and freq >= cutoff:
+                high_df.append(term)
+            else:
+                kept.append(term)
+        if kept:
+            if any(df.get(term, 0) > 0 for term in kept):
+                return kept, stopwords, high_df, False
+            # The surviving terms match nothing in this corpus, so the
+            # selective filter would silently drop the only useful (high-df)
+            # term. Fall back to the historical query terms instead.
+            return raw, stopwords, high_df, True
+        # Every term was filtered: fall back to the historical behavior.
+        return raw, stopwords, high_df, True
+
+    return base, stopwords, high_df, False
+
+
 class BM25Ranker:
     """
     BM25 ranker for scoring documents against a query.
@@ -105,16 +163,41 @@ class BM25Ranker:
         denominator = f + self.k1 * (1.0 - self.b + self.b * (dl / self.avgdl if self.avgdl > 0 else 0.0))
         return idf * f * (self.k1 + 1.0) / denominator
 
-    def score_query(self, query: str) -> List[float]:
+    def score_query(
+        self,
+        query: str,
+        max_df_fraction: float = 1.0,
+        remove_stopwords: bool = False,
+        term_meta: dict = None,
+    ) -> List[float]:
         """
         Score every document in the corpus against the query.
 
         Returns a list of scores in the same order as the input documents.
+        ``max_df_fraction`` / ``remove_stopwords`` default to the historical
+        behavior; ``bm25_rank_facts`` opts into the selective defaults.
         """
         if self.corpus_size == 0:
             return []
 
-        query_terms = self._tokenize(query)
+        raw_terms = self._tokenize(query)
+        query_terms, stopwords, high_df, fallback = _select_query_terms(
+            raw_terms,
+            self.df,
+            self.corpus_size,
+            max_df_fraction=max_df_fraction,
+            remove_stopwords=remove_stopwords,
+        )
+        if term_meta is not None:
+            term_meta.update({
+                "query_terms": raw_terms,
+                "selected_terms": query_terms,
+                "stopword_terms": stopwords,
+                "high_df_terms": high_df,
+                "matched_terms": [t for t in query_terms if self.df.get(t, 0) > 0],
+                "fallback_all_terms": fallback,
+                "max_df_fraction": max_df_fraction,
+            })
         scores = [0.0] * self.corpus_size
 
         for q_term in query_terms:
@@ -195,7 +278,10 @@ def bm25_rank_facts(
     user_input: str,
     limit: int = 3,
     score_threshold: float = 0.0,
-) -> List[Tuple[float, str, str, int]]:
+    max_df_fraction: float = 0.5,
+    remove_stopwords: bool = True,
+    return_terms: bool = False,
+):
     """
     Convenience helper: rank a list of memory facts using BM25.
 
@@ -204,12 +290,17 @@ def bm25_rank_facts(
     queries (e.g. "where do I live?") match facts whose keyword is
     something like user_location (via the "location" alias set).
 
+    Terms present in at least ``max_df_fraction`` of the facts are ignored
+    (unless that removes every term) and common stopwords are dropped; pass
+    ``max_df_fraction=1.0, remove_stopwords=False`` for the old ranking.
+
     Returns a list of (score, keyword, value, tokens) sorted by score
     descending, truncated to `limit` entries and filtered by
-    `score_threshold`.
+    `score_threshold`.  With ``return_terms=True`` returns
+    ``(results, term_meta)``.
     """
     if not facts:
-        return []
+        return ([], {}) if return_terms else []
 
     # Build documents: "expanded_keyword : value" so aliases boost recall
     documents = []
@@ -221,7 +312,13 @@ def bm25_rank_facts(
             documents.append(kw_expanded)
 
     ranker = BM25Ranker(documents)
-    scores = ranker.score_query(user_input)
+    term_meta = {}
+    scores = ranker.score_query(
+        user_input,
+        max_df_fraction=max_df_fraction,
+        remove_stopwords=remove_stopwords,
+        term_meta=term_meta,
+    )
     # Deterministic tie-break: (score desc, keyword asc, index asc). The
     # keyword is the stable fact id and is unique among a session's active
     # facts, so this total order is independent of the row/recency order the
@@ -244,4 +341,4 @@ def bm25_rank_facts(
         results.append((score, kw, val, tok))
         if len(results) >= limit:
             break
-    return results
+    return (results, term_meta) if return_terms else results

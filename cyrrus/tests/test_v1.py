@@ -1022,7 +1022,10 @@ async def test_integration_fact_labels_default_and_compact(tmp_path):
         turns = [
             "Hi, my name is Alice and I live in Lisbon.",
             "I work at Acme Robotics.",
-            "Where do I live and where do I work?",
+            # v8 term weighting drops query stopwords, so the probe must name
+            # every fact it wants rendered; the old "where do I ..." phrasing
+            # only surfaced name via the "i" stopword alias.
+            "What is my name, where do I live and where do I work?",
         ]
 
         default_bot = make_bot(None, "default")

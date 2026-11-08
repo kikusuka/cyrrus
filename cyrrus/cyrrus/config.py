@@ -28,6 +28,9 @@ DEFAULTS = {
         # Fact injection floor relative to the best BM25 score. Candidates
         # below min_relative_score * top_score are dropped (top-1 is kept).
         "min_relative_score": 0.5,
+        # Ignore query terms present in at least this fraction of a session's
+        # facts (unless that would remove every term).
+        "max_df_fraction": 0.5,
         # Include fact values in traces. Off by default: traces are prompt-safe.
         "trace_values": False,
         # Number of most-recently-used sessions whose retrieval index the
@@ -192,6 +195,10 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
             value = memory["min_relative_score"]
             if not isinstance(value, (int, float)) or not (0 <= value <= 1):
                 raise ValueError("memory.min_relative_score must be a number between 0 and 1")
+        if "max_df_fraction" in memory and memory["max_df_fraction"] is not None:
+            value = memory["max_df_fraction"]
+            if not isinstance(value, (int, float)) or not (0 <= value <= 1):
+                raise ValueError("memory.max_df_fraction must be a number between 0 and 1")
         if "warmup_sessions" in memory and memory["warmup_sessions"] is not None:
             if not isinstance(memory["warmup_sessions"], int) or memory["warmup_sessions"] < 0:
                 raise ValueError("memory.warmup_sessions must be a non-negative integer")

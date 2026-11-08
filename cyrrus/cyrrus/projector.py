@@ -259,6 +259,7 @@ class Projector:
         renderer: Optional[object] = None,
         trace_values: Optional[bool] = None,
         min_relative_score: Optional[float] = None,
+        max_df_fraction: Optional[float] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -316,6 +317,11 @@ class Projector:
                 "min_relative_score", 0.5
             )
         self.min_relative_score = float(min_relative_score)
+        if max_df_fraction is None:
+            max_df_fraction = slides_config.get("memory", {}).get(
+                "max_df_fraction", 0.5
+            )
+        self.max_df_fraction = float(max_df_fraction)
 
         lamp_data = slides_config["core_lamp"]
         self.lamp = Slide(
@@ -336,11 +342,14 @@ class Projector:
             embedding_min_score=embedding_min_score,
             trace_values=self.trace_values,
             min_relative_score=self.min_relative_score,
+            max_df_fraction=self.max_df_fraction,
         )
         if memory is not None and hasattr(memory, "trace_values"):
             memory.trace_values = self.trace_values
         if memory is not None and hasattr(memory, "min_relative_score"):
             memory.min_relative_score = self.min_relative_score
+        if memory is not None and hasattr(memory, "max_df_fraction"):
+            memory.max_df_fraction = self.max_df_fraction
         self.knapsack = knapsack or TokenKnapsack()
 
         self.last_stats = {}
@@ -855,6 +864,7 @@ class Projector:
             "session_id": session_id,
             "fact_candidates": len(retrieval_trace.candidates),
             "facts_injected": len(packed_memory),
+            "terms": dict(retrieval_trace.terms),
         }
 
         trace["routed"] = routed
