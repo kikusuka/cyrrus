@@ -4,6 +4,13 @@ Tests for the per-session inverted-index retrieval path (Item 3, phase 1b).
 The SQLiteBackend must expose retrieve_ranked() that returns results
 IDENTICAL to ranking all active facts with bm25_rank_facts, while avoiding
 a full re-scan/re-rank of the corpus on every call.
+
+DELIBERATE BEHAVIOR CHANGE (v8 item 3): both paths now drop query
+stopwords and ignore terms present in at least ``max_df_fraction`` (0.5)
+of a session's facts, with a fallback to the non-stopword terms when that
+would remove all of them. The parity expectations below therefore pass
+the same defaults to bm25_rank_facts; callers wanting the pre-v8 ranking
+can pass ``max_df_fraction=1.0, remove_stopwords=False``.
 """
 import asyncio
 import random

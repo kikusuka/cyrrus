@@ -19,6 +19,99 @@ import re
 from typing import List, Tuple, Sequence, Dict, Set
 
 
+# Query-side stopwords, dropped before ranking. Rare ones (see
+# _RARE_STOPWORD_FRACTION) are restored if df-pruning empties the query; all
+# are restored if even that matches nothing.
+STOPWORDS = frozenset("""
+a an and are as at be been but by do does for from had has have i if in into
+is it its me my of on or our she that the their them then there these they
+this to was we were what when where which who why will with you your
+""".split())
+
+# Below this df fraction a stopword still discriminates, so the fallback keeps
+# it (near_dup's "i": df 1 of 31). Existing threshold, reused not newly added.
+_RARE_STOPWORD_FRACTION = 0.1
+
+
+def _prune_high_df(base, df, corpus_size, max_df_fraction):
+    """Split ``base`` into (kept, high_df) using the df/fraction cutoff.
+
+    Terms seen in at least ``max_df_fraction`` of the corpus are treated as
+    filler; the split is returned unchanged when pruning is disabled or the
+    fraction is out of range.
+    """
+    if not (
+        corpus_size > 0
+        and max_df_fraction is not None
+        and 0 <= max_df_fraction < 1.0
+    ):
+        return base, []
+    cutoff = max_df_fraction * corpus_size
+    kept = []
+    high_df = []
+    for term in base:
+        freq = df.get(term, 0)
+        if freq > 0 and freq >= cutoff:
+            high_df.append(term)
+        else:
+            kept.append(term)
+    return kept, high_df
+
+
+def _matches_any(terms, df):
+    return any(df.get(term, 0) > 0 for term in terms)
+
+
+def _select_query_terms(
+    query_terms: Sequence[str],
+    df: Dict[str, int],
+    corpus_size: int,
+    max_df_fraction: float = 0.5,
+    remove_stopwords: bool = True,
+):
+    """Choose the query terms that carry ranking signal.
+
+    Stopwords are removed first, then content terms seen in at least
+    ``max_df_fraction`` of the corpus are pruned as filler.  A query made only
+    of stopwords is returned unchanged.  If pruning would leave no matching
+    content term, the pruned high-df terms are restored and stopword removal is
+    kept -- except rare stopwords (df/corpus < _RARE_STOPWORD_FRACTION), which
+    still discriminate (near_dup's "i").  If, even then, NO selected term
+    matches any document -- stopword removal stripped the only informative term,
+    as in "do I have children" against "I have two kids" -- the query is retried
+    with all stopwords restored and the same pruning applied.  No new threshold
+    is introduced.
+
+    Returns (selected, stopwords, high_df, fallback).
+    """
+    raw = list(query_terms)
+    stopwords = [t for t in raw if remove_stopwords and t in STOPWORDS]
+    base = [t for t in raw if t not in STOPWORDS] if remove_stopwords else raw
+    if not base:
+        return raw, stopwords, [], True
+
+    kept, high_df = _prune_high_df(base, df, corpus_size, max_df_fraction)
+    if kept and _matches_any(kept, df):
+        return kept, stopwords, high_df, False
+
+    # Undo pruning but keep stopword removal; restore only rare stopwords.
+    rare = [t for t in stopwords
+            if df.get(t, 0) > 0
+            and df[t] / corpus_size < _RARE_STOPWORD_FRACTION]
+    fallback_terms = [t for t in raw if t in base or t in rare]
+
+    # Nothing matches even after that: stopword removal stripped the only
+    # informative term. Retry with all stopwords restored, pruning unchanged.
+    if not _matches_any(fallback_terms, df):
+        full_kept, full_high = _prune_high_df(
+            raw, df, corpus_size, max_df_fraction
+        )
+        if _matches_any(full_kept, df):
+            return full_kept, stopwords, full_high, True
+
+    return fallback_terms, stopwords, high_df, True
+
+
 class BM25Ranker:
     """
     BM25 ranker for scoring documents against a query.
@@ -105,16 +198,41 @@ class BM25Ranker:
         denominator = f + self.k1 * (1.0 - self.b + self.b * (dl / self.avgdl if self.avgdl > 0 else 0.0))
         return idf * f * (self.k1 + 1.0) / denominator
 
-    def score_query(self, query: str) -> List[float]:
+    def score_query(
+        self,
+        query: str,
+        max_df_fraction: float = 1.0,
+        remove_stopwords: bool = False,
+        term_meta: dict = None,
+    ) -> List[float]:
         """
         Score every document in the corpus against the query.
 
         Returns a list of scores in the same order as the input documents.
+        ``max_df_fraction`` / ``remove_stopwords`` default to the historical
+        behavior; ``bm25_rank_facts`` opts into the selective defaults.
         """
         if self.corpus_size == 0:
             return []
 
-        query_terms = self._tokenize(query)
+        raw_terms = self._tokenize(query)
+        query_terms, stopwords, high_df, fallback = _select_query_terms(
+            raw_terms,
+            self.df,
+            self.corpus_size,
+            max_df_fraction=max_df_fraction,
+            remove_stopwords=remove_stopwords,
+        )
+        if term_meta is not None:
+            term_meta.update({
+                "query_terms": raw_terms,
+                "selected_terms": query_terms,
+                "stopword_terms": stopwords,
+                "high_df_terms": high_df,
+                "matched_terms": [t for t in query_terms if self.df.get(t, 0) > 0],
+                "fallback_all_terms": fallback,
+                "max_df_fraction": max_df_fraction,
+            })
         scores = [0.0] * self.corpus_size
 
         for q_term in query_terms:
@@ -195,7 +313,10 @@ def bm25_rank_facts(
     user_input: str,
     limit: int = 3,
     score_threshold: float = 0.0,
-) -> List[Tuple[float, str, str, int]]:
+    max_df_fraction: float = 0.5,
+    remove_stopwords: bool = True,
+    return_terms: bool = False,
+):
     """
     Convenience helper: rank a list of memory facts using BM25.
 
@@ -204,12 +325,17 @@ def bm25_rank_facts(
     queries (e.g. "where do I live?") match facts whose keyword is
     something like user_location (via the "location" alias set).
 
+    Terms present in at least ``max_df_fraction`` of the facts are ignored
+    (unless that removes every term) and common stopwords are dropped; pass
+    ``max_df_fraction=1.0, remove_stopwords=False`` for the old ranking.
+
     Returns a list of (score, keyword, value, tokens) sorted by score
     descending, truncated to `limit` entries and filtered by
-    `score_threshold`.
+    `score_threshold`.  With ``return_terms=True`` returns
+    ``(results, term_meta)``.
     """
     if not facts:
-        return []
+        return ([], {}) if return_terms else []
 
     # Build documents: "expanded_keyword : value" so aliases boost recall
     documents = []
@@ -221,7 +347,13 @@ def bm25_rank_facts(
             documents.append(kw_expanded)
 
     ranker = BM25Ranker(documents)
-    scores = ranker.score_query(user_input)
+    term_meta = {}
+    scores = ranker.score_query(
+        user_input,
+        max_df_fraction=max_df_fraction,
+        remove_stopwords=remove_stopwords,
+        term_meta=term_meta,
+    )
     # Deterministic tie-break: (score desc, keyword asc, index asc). The
     # keyword is the stable fact id and is unique among a session's active
     # facts, so this total order is independent of the row/recency order the
@@ -244,4 +376,4 @@ def bm25_rank_facts(
         results.append((score, kw, val, tok))
         if len(results) >= limit:
             break
-    return results
+    return (results, term_meta) if return_terms else results

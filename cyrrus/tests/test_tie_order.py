@@ -15,6 +15,12 @@ both rankers are order-independent.
 
 The parity test below fails pre-fix on tie-heavy data once touch() reorders
 the rows, and passes once both rankers tie-break by fact id.
+
+DELIBERATE BEHAVIOR CHANGE (v8 item 3): query stopwords and high-df terms
+are now dropped by default in both rankers. The parity calls below rely on
+both sides using the same term-weighting defaults; the score tiers in this
+file are single-token queries that survive the fallback, so the tie groups
+remain exact ties.
 """
 import random
 

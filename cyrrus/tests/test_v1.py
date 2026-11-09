@@ -1014,12 +1014,18 @@ async def test_integration_fact_labels_default_and_compact(tmp_path):
                 llm_call=fake_llm,
                 renderer=renderer,
                 memory_db_path=str(tmp_path / f"labels_{db_suffix}.db"),
+                # This test checks fact labels, not selective injection: keep
+                # every retrieved fact so all three labels are rendered.
+                min_relative_score=0.0,
             )
 
         turns = [
             "Hi, my name is Alice and I live in Lisbon.",
             "I work at Acme Robotics.",
-            "Where do I live and where do I work?",
+            # v8 term weighting drops query stopwords, so the probe must name
+            # every fact it wants rendered; the old "where do I ..." phrasing
+            # only surfaced name via the "i" stopword alias.
+            "What is my name, where do I live and where do I work?",
         ]
 
         default_bot = make_bot(None, "default")

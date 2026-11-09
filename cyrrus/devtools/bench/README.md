@@ -22,6 +22,17 @@ python devtools/bench/bench.py --json out.json # choose the JSON output path
 It prints markdown tables to stdout and writes `bench_results.json` next to
 `bench.py` by default.
 
+## Holdout
+
+`holdout.py` is a separate set of **holdout scenarios, never used to pick
+defaults**. It is an out-of-sample recall/token check run alongside `bench.py`;
+defaults are chosen on `bench.py` and the joint sweep, not on the holdout.
+
+```
+python devtools/bench/holdout.py                       # v8 defaults
+python devtools/bench/holdout.py max_df_fraction=1.0   # override a v8 param
+```
+
 ## What it measures
 
 For each scenario the harness stores facts, then issues probe queries and checks

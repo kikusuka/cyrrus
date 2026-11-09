@@ -10,6 +10,8 @@ import sys
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
+from . import plugins as plugin_module
+
 
 # Default configuration values
 DEFAULTS = {
@@ -25,6 +27,14 @@ DEFAULTS = {
         "retrieval": "keyword",  # "keyword" or "hybrid"
         "max_facts_per_session": 50,
         "embedding_min_score": 0.7,
+        # Fact injection floor relative to the best BM25 score. Candidates
+        # below min_relative_score * top_score are dropped (top-1 is kept).
+        "min_relative_score": 0.5,
+        # Ignore query terms present in at least this fraction of a session's
+        # facts (unless that would remove every term).
+        "max_df_fraction": 0.5,
+        # Include fact values in traces. Off by default: traces are prompt-safe.
+        "trace_values": False,
         # Number of most-recently-used sessions whose retrieval index the
         # gateway warms in a background thread at startup. 0 disables warm-up.
         "warmup_sessions": 0,
@@ -47,6 +57,14 @@ DEFAULTS = {
         "force_model": None,
         "api_key_env": None,
         "upstream_timeout": 60.0,
+    },
+    # Plugin slot selection. None means "use the built-in default", so a
+    # zero-config install needs no entry points and no extras. Names not in
+    # the built-in set are looked up in the "cyrrus.plugins" entry-point group.
+    "plugins": {
+        "retriever": None,
+        "packer": None,
+        "backend": None,
     },
 }
 
@@ -181,6 +199,16 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         if "embedding_min_score" in memory and memory["embedding_min_score"] is not None:
             if not isinstance(memory["embedding_min_score"], (int, float)) or not (0 <= memory["embedding_min_score"] <= 1):
                 raise ValueError("memory.embedding_min_score must be a number between 0 and 1")
+        if "trace_values" in memory and not isinstance(memory["trace_values"], bool):
+            raise ValueError("memory.trace_values must be a boolean")
+        if "min_relative_score" in memory and memory["min_relative_score"] is not None:
+            value = memory["min_relative_score"]
+            if not isinstance(value, (int, float)) or not (0 <= value <= 1):
+                raise ValueError("memory.min_relative_score must be a number between 0 and 1")
+        if "max_df_fraction" in memory and memory["max_df_fraction"] is not None:
+            value = memory["max_df_fraction"]
+            if not isinstance(value, (int, float)) or not (0 <= value <= 1):
+                raise ValueError("memory.max_df_fraction must be a number between 0 and 1")
         if "warmup_sessions" in memory and memory["warmup_sessions"] is not None:
             if not isinstance(memory["warmup_sessions"], int) or memory["warmup_sessions"] < 0:
                 raise ValueError("memory.warmup_sessions must be a non-negative integer")
@@ -226,6 +254,29 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("gateway.api_key_env must be a string or null")
     if not isinstance(gateway.get("upstream_timeout"), (int, float)) or gateway["upstream_timeout"] <= 0:
         raise ValueError("gateway.upstream_timeout must be positive")
+
+    # Validate plugins section
+    if "plugins" in normalized:
+        plugins = normalized["plugins"]
+        if not isinstance(plugins, dict):
+            raise ValueError("plugins must be a dict")
+        for slot in ("retriever", "packer", "backend"):
+            value = plugins.get(slot)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "plugins.%s must be a non-empty string or null" % slot
+                )
+        # Validate known plugin names for each slot
+            available = plugin_module.list_plugins()
+            for slot in ("retriever", "packer", "backend"):
+                value = plugins.get(slot)
+                if value is not None and value not in available:
+                    raise ValueError(
+                        "plugins.%s=%r is not a known plugin. Available: %s"
+                        % (slot, value, ", ".join(available))
+                    )
 
     return normalized
 

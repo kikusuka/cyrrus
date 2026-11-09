@@ -15,9 +15,10 @@ import math
 import re
 from typing import Dict, List, Sequence, Tuple
 
-from .bm25 import _expand_keyword_with_aliases
+from .bm25 import _expand_keyword_with_aliases, _select_query_terms
 
 _DROP_CAP = 100
+_TRACE_CAP = 100
 
 
 def _tokenize(text: str) -> List[str]:
@@ -96,19 +97,63 @@ class SessionFactIndex:
         user_input: str,
         limit: int = 3,
         score_threshold: float = 0.0,
-    ) -> Tuple[List[Tuple[float, str, str, int]], List[Dict[str, str]]]:
+        explain: bool = False,
+        max_df_fraction: float = 0.5,
+        remove_stopwords: bool = True,
+        with_terms: bool = False,
+    ):
         """Rank facts against user_input.
 
         Returns (ranked, dropped) where ranked is a list of
-        (score, keyword, value, tokens) — identical to
-        bm25_rank_facts(facts, user_input, limit, score_threshold) — and
-        dropped is a capped list of {"key": kw, "reason": "below threshold"}
-        for facts not included in ranked.
+        (score, keyword, value, tokens) and dropped is a capped list of
+        {"key": kw, "reason": "below threshold"} for facts not included.
+
+        With ``explain=True`` a third list is returned: ranked candidates in
+        score order as (score, keyword, value, tokens, included,
+        dropped_reason), capped at limit + 100.  The first ``limit`` entries
+        are included; the rest were ranked below the injection cap.
+
+        Query terms present in at least ``max_df_fraction`` of the session's
+        facts are ignored (unless every term would be removed) and stopwords
+        are dropped.  ``with_terms=True`` adds match metadata.
         """
         if self.corpus_size == 0:
+            meta = {
+                "query_terms": _tokenize(user_input),
+                "selected_terms": [],
+                "stopword_terms": [],
+                "high_df_terms": [],
+                "matched_terms": [],
+                "fallback_all_terms": False,
+                "max_df_fraction": max_df_fraction,
+            }
+            if explain and with_terms:
+                return [], [], [], meta
+            if explain:
+                return [], [], []
+            if with_terms:
+                return [], [], meta
             return [], []
 
-        query_terms = _tokenize(user_input)
+        raw_terms = _tokenize(user_input)
+        query_terms, stopwords, high_df, fallback = _select_query_terms(
+            raw_terms,
+            self.df,
+            self.corpus_size,
+            max_df_fraction=max_df_fraction,
+            remove_stopwords=remove_stopwords,
+        )
+        meta = {
+            "query_terms": raw_terms,
+            "selected_terms": query_terms,
+            "stopword_terms": stopwords,
+            "high_df_terms": high_df,
+            "matched_terms": [
+                t for t in query_terms if self.postings.get(t)
+            ],
+            "fallback_all_terms": fallback,
+            "max_df_fraction": max_df_fraction,
+        }
 
         # Term-oriented accumulation over postings into a flat array. Every
         # document receives a score (0.0 when no query term matches), so a
@@ -147,18 +192,19 @@ class SessionFactIndex:
             idx, score = item
             return (-score, facts[idx][0], idx)
 
-        if len(filtered) > limit:
-            top = heapq.nsmallest(limit, filtered, key=_key)
+        take = limit + _TRACE_CAP if explain else limit
+        if len(filtered) > take:
+            top = heapq.nsmallest(take, filtered, key=_key)
         else:
             filtered.sort(key=_key)
             top = filtered
 
         ranked_out = []
-        for idx, score in top:
+        for idx, score in top[:limit]:
             kw, val, tok = self.facts[idx]
             ranked_out.append((score, kw, val, tok))
 
-        included = {idx for idx, _ in top}
+        included = {idx for idx, _ in top[:limit]}
         dropped = []
         for idx, (kw, _v, _t) in enumerate(self.facts):
             if idx in included:
@@ -166,4 +212,19 @@ class SessionFactIndex:
             dropped.append({"key": kw, "reason": "below threshold"})
             if len(dropped) >= _DROP_CAP:
                 break
+        if explain:
+            explained = []
+            for pos, (idx, score) in enumerate(top):
+                kw, val, tok = self.facts[idx]
+                if pos < limit:
+                    explained.append((score, kw, val, tok, True, None))
+                else:
+                    explained.append(
+                        (score, kw, val, tok, False, "below_limit")
+                    )
+            if with_terms:
+                return ranked_out, dropped, explained, meta
+            return ranked_out, dropped, explained
+        if with_terms:
+            return ranked_out, dropped, meta
         return ranked_out, dropped

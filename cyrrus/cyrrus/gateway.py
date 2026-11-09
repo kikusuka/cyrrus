@@ -64,6 +64,8 @@ def _safe_trace(trace):
         "routed": trace.get("routed", []),
         "ghosts": trace.get("ghosts", []),
         "fact_keys": [item.get("key") for item in trace.get("facts", [])],
+        "candidates": trace.get("candidates", []),
+        "retrieval": trace.get("retrieval", {}),
         "dropped": trace.get("dropped", []),
         "stats": trace.get("stats", {}),
     }
@@ -424,6 +426,11 @@ class Gateway:
             slides, unused_llm, max_context_tokens=context.get("max_context_tokens", 4000),
             memory_db_path=memory.get("db_path"),
             max_memory_facts=memory.get("max_facts_per_session", 50),
+            embedding_min_score=memory.get("embedding_min_score", 0.68),
+            trace_values=memory.get("trace_values", False),
+            min_relative_score=memory.get("min_relative_score", 0.5),
+            max_df_fraction=memory.get("max_df_fraction", 0.5),
+            plugins=self.config.get("plugins") or {},
         )
 
     def _secret(self, env_name):

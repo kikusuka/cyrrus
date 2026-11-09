@@ -23,8 +23,20 @@ from .config_validation import validate_config
 from .extractor import extract_facts
 from .data import Slide
 from .providers import StreamChunk
+from .trace import Trace
 
 log = logging.getLogger("cyrrus.projector")
+
+
+class _CallableTrace(dict):
+    """Dict-compatible trace that also supports ``bot.last_trace()``.
+
+    The attribute has always been a dict, so keeping dict behavior avoids a
+    public-API break; making it callable adds the accessor without a rename.
+    """
+
+    def __call__(self):
+        return self
 
 
 class SessionLocks:
@@ -245,6 +257,10 @@ class Projector:
         tool_executor_timeout: float = 5.0,
         tokenizer: Optional[object] = None,
         renderer: Optional[object] = None,
+        trace_values: Optional[bool] = None,
+        min_relative_score: Optional[float] = None,
+        max_df_fraction: Optional[float] = None,
+        plugins: Optional[dict] = None,
     ):
         if not asyncio.iscoroutinefunction(llm_call):
             raise TypeError(
@@ -292,6 +308,41 @@ class Projector:
             self.compressor = ExtractiveCompressor()
 
         slides_config = validate_config(slides_config)
+        if trace_values is None:
+            trace_values = bool(
+                slides_config.get("memory", {}).get("trace_values", False)
+            )
+        self.trace_values = bool(trace_values)
+        if min_relative_score is None:
+            min_relative_score = slides_config.get("memory", {}).get(
+                "min_relative_score", 0.5
+            )
+        self.min_relative_score = float(min_relative_score)
+        if max_df_fraction is None:
+            max_df_fraction = slides_config.get("memory", {}).get(
+                "max_df_fraction", 0.5
+            )
+        self.max_df_fraction = float(max_df_fraction)
+
+        if plugins is None:
+            plugins = {}
+        if not isinstance(plugins, dict):
+            raise TypeError("plugins must be a dict of slot names to plugin names")
+        self.plugins = dict(plugins)
+        retriever_name = self.plugins.get("retriever")
+        packer_name = self.plugins.get("packer")
+        backend_name = self.plugins.get("backend")
+        for slot, value in (
+            ("retriever", retriever_name),
+            ("packer", packer_name),
+            ("backend", backend_name),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(
+                    "plugins.%s must be a non-empty string or None" % slot
+                )
 
         lamp_data = slides_config["core_lamp"]
         self.lamp = Slide(
@@ -305,16 +356,56 @@ class Projector:
         self.router = router or IntentRouter(slides_config)
         if memory_db_path is None:
             memory_db_path = default_db_path()
+
+        backend_plugin = None
+        if backend_name:
+            from .plugins import resolve_plugin
+
+            backend_plugin = resolve_plugin(
+                "backend", backend_name, {"db_path": memory_db_path}
+            )
+
         self.memory = memory or MemoryVault(
             db_path=memory_db_path,
             max_facts_per_session=memory_max_facts_per_session,
             max_fact_value_length=memory_max_fact_value_length,
             embedding_min_score=embedding_min_score,
+            trace_values=self.trace_values,
+            min_relative_score=self.min_relative_score,
+            max_df_fraction=self.max_df_fraction,
+            backend=backend_plugin,
+            retriever=retriever_name,
         )
-        self.knapsack = knapsack or TokenKnapsack()
+        if memory is not None and hasattr(memory, "trace_values"):
+            memory.trace_values = self.trace_values
+        if memory is not None and hasattr(memory, "min_relative_score"):
+            memory.min_relative_score = self.min_relative_score
+        if memory is not None and hasattr(memory, "max_df_fraction"):
+            memory.max_df_fraction = self.max_df_fraction
+        if (
+            memory is not None
+            and retriever_name
+            and hasattr(memory, "_retriever")
+        ):
+            from .plugins import resolve_plugin
+
+            memory._retriever = resolve_plugin(
+                "retriever",
+                retriever_name,
+                {"max_df_fraction": self.max_df_fraction},
+            )
+
+        if knapsack is not None:
+            self.knapsack = knapsack
+        elif packer_name:
+            from .plugins import resolve_plugin
+
+            self.knapsack = resolve_plugin("packer", packer_name)
+        else:
+            self.knapsack = TokenKnapsack()
 
         self.last_stats = {}
-        self.last_trace = {}
+        self.last_trace = _CallableTrace()
         self.trace_log = deque(maxlen=trace_log_size)
 
     def _estimate_tokens(self, text: str) -> int:
@@ -600,13 +691,28 @@ class Projector:
 
         candidates, negated_ids = await self.router.route(user_input)
         # Retrieve more facts than needed, then cap by count and tokens
-        memory_slides = await self.memory.retrieve(session_id, user_input, limit=self.max_memory_facts * 2)
+        retrieval_trace = Trace(
+            session_id=session_id, include_values=self.trace_values
+        )
+        try:
+            memory_slides = await self.memory.retrieve(
+                session_id,
+                user_input,
+                limit=self.max_memory_facts * 2,
+                trace=retrieval_trace,
+            )
+        except TypeError:
+            # Third-party memory implementations predating the trace kwarg.
+            memory_slides = await self.memory.retrieve(
+                session_id, user_input, limit=self.max_memory_facts * 2
+            )
         
         # Track original count before capping
         original_memory_count = len(memory_slides)
         
         # Cap by max_memory_facts (take top N by relevance/retrieval order)
         memory_slides = memory_slides[:self.max_memory_facts]
+        capped_memory_ids = {s.id for s in memory_slides}
         
         # Track facts dropped by fact cap
         facts_dropped = []
@@ -759,13 +865,60 @@ class Projector:
                             (session_id,),
                         ).fetchall()
                         for keyword, value, relevance in rows:
-                            facts.append({"key": keyword, "value": value, "score": relevance})
+                            item = {"key": keyword, "score": relevance}
+                            if self.trace_values:
+                                item["value"] = value
+                            facts.append(item)
             except Exception:
                 pass
 
         # "system_message": the final rendered system message.
         # "dropped": entries recorded below (over token budget, over fact cap,
         # below threshold, ghost expired).  Collected during this turn.
+        # Per-turn candidate trace: every ranked fact candidate plus routed
+        # slide candidates, with the final include/drop decision.  Values are
+        # included only when memory.trace_values is enabled.
+        final_fact_ids = {s.id for s in packed_memory}
+        candidate_trace = []
+        for candidate in retrieval_trace.to_dict()["candidates"]:
+            item = dict(candidate)
+            if item["source"] == "fact":
+                sid = "mem_" + item["id"]
+                if item["included"]:
+                    if sid in final_fact_ids:
+                        item["reason"] = "included"
+                    elif sid in capped_memory_ids:
+                        item["included"] = False
+                        item.pop("reason", None)
+                        item["dropped_reason"] = "over token budget"
+                    else:
+                        item["included"] = False
+                        item.pop("reason", None)
+                        item["dropped_reason"] = "over fact cap"
+            candidate_trace.append(item)
+        packed_routed_ids = {s.id for s in packed_routed}
+        for slide in candidates:
+            sid = getattr(slide, "id", slide)
+            score = float(getattr(slide, "priority", 0) or 0)
+            if sid in packed_routed_ids:
+                candidate_trace.append({
+                    "source": "slide", "id": sid, "key": sid,
+                    "score": score, "included": True, "reason": "included",
+                })
+            else:
+                candidate_trace.append({
+                    "source": "slide", "id": sid, "key": sid,
+                    "score": score, "included": False,
+                    "dropped_reason": "over token budget",
+                })
+        trace["candidates"] = candidate_trace
+        trace["retrieval"] = {
+            "session_id": session_id,
+            "fact_candidates": len(retrieval_trace.candidates),
+            "facts_injected": len(packed_memory),
+            "terms": dict(retrieval_trace.terms),
+        }
+
         trace["routed"] = routed
         trace["ghosts"] = ghosts
         trace["facts"] = facts
@@ -876,6 +1029,7 @@ class Projector:
             raise TypeError("user_text must be a string")
         trace = {"session_id": session_id, "user_input": user_text, "timestamp": time.time()}
         await self._prepare_turn(user_text, session_id, trace)
+        self._record_trace(trace)
         return trace["system_message"], trace
 
     async def record_turn(self, session_id: str, user_text: str, assistant_text: str):
@@ -1159,7 +1313,7 @@ class Projector:
         return await self.memory.list_sessions()
 
     def _record_trace(self, trace: dict):
-        self.last_trace = trace
+        self.last_trace = _CallableTrace(trace)
         self.trace_log.append(trace)
         if self.trace_file:
             try:
