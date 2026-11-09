@@ -2,10 +2,25 @@
 
 ## 0.3.0b6
 
+### Fixed
+- **Crash on Linux (and likely macOS):** under concurrent load the SQLite backend could segfault. A routine WAL checkpoint changed the file's ctime, was mistaken for "file replaced", and closed the shared connection while another thread was using it. File replacement is now detected by device and inode, and connection reset is guarded by a lock.
+- `ask()` now stores extracted facts before returning. Previously the extraction task was cancelled when the event loop closed, so nothing was remembered. Waiting is bounded by `flush_timeout` (default 10 s).
+- Retrieval now ranks all active facts for a session. Previously only the 100 most recently accessed facts were considered, so older facts could never be recalled. `memory_search` uses the same path and is no longer capped at 100.
+- Cached search indexes no longer go stale after another process or connection writes to the database.
+- Gateway: all context work runs on one persistent event loop. Cross-loop errors previously made requests silently skip memory under concurrency.
+- Gateway: shutdown now drains every served turn before stopping, with a configurable `shutdown_timeout` (default 30 s) that logs how many turns could not be recorded. Ctrl+C announces the drain and a second Ctrl+C force-quits. Counters are thread-safe, and oversized request bodies are drained before the 413 so clients do not see a connection reset.
+- `ask()` inside a running event loop now raises an error that points to `await bot.process(...)`.
+
 ### Changed
+- Equal-score retrieval ties are broken by fact key instead of recency, so rankings are deterministic.
+- Per-session search indexes are cached with an LRU limit (default 64 sessions / 200,000 documents) to bound memory. An optional background warm-up is available for the gateway.
 - Dev utilities moved from ``cyrrus/tools`` to ``cyrrus/devtools`` so the dev folder no longer shadows the ``cyrrus.tools`` module.
+- Extended CLI with new commands while preserving existing `init` functionality
+- Added `cyrrus/__main__.py` for module execution
+- Replaced memory and session tool placeholders with real implementations
 
 ### Added
+- `devtools/bench`: a deterministic, offline benchmark for injection quality (recall, stale leakage, distractor rate, tokens, latency). Scenarios cyrrus currently fails are marked `[known-weak]` (source repository only).
 - Guided `cyrrus setup` wizard, `cyrrus home` menu, arrow-key selection with a
   numbered fallback, and an intro that dissolves into the interface.
 - Safer API-key handling: `--api-key-env NAME` stores only the variable name,
@@ -45,11 +60,6 @@
   flag; `cyrrus ui` respects `ui.animation`/`ui.onboarded`, TTY, CI and
   `CYRRUS_NO_ANIM`, and never animates over stdout (protocol/non-interactive
   mode).
-
-### Changed
-- Extended CLI with new commands while preserving existing `init` functionality
-- Added `cyrrus/__main__.py` for module execution
-- Replaced memory and session tool placeholders with real implementations
 
 ## 0.3.0b5
 
