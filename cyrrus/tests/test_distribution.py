@@ -243,3 +243,27 @@ def test_py_m_cyrrus_runs(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "cyrrus" in result.stdout.lower()
+
+
+def test_doctor_uses_ascii_when_stdout_cannot_encode_unicode(monkeypatch):
+    import io
+
+    from cyrrus import cli
+
+    class Cp1252Stdout(io.StringIO):
+        encoding = "cp1252"
+
+    fake = Cp1252Stdout()
+    monkeypatch.setattr(cli, "load_config", lambda **kw: {"ui": {}})
+    monkeypatch.setattr(cli, "doctor", lambda config: {
+        "overall_status": "ok",
+        "checks": [{"name": "sample", "status": "ok", "message": "fine"}],
+    })
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    cli.main(["doctor"])
+
+    output = fake.getvalue()
+    assert "sample: fine" in output
+    assert "✓" not in output
+    assert "OK" in output

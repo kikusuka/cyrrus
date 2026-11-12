@@ -1,0 +1,72 @@
+name: binaries
+
+"on":
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: cyrrus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install project and PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+
+      - name: Build one-file binary
+        shell: bash
+        run: |
+          python -m PyInstaller packaging/cyrrus.spec --noconfirm \
+            --distpath dist-binaries --workpath build-pyinstaller
+          BIN=dist-binaries/cyrrus
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN="$BIN.exe"; fi
+          test -f "$BIN"
+          echo "CYRRUS_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Smoke-test binary
+        shell: bash
+        run: python packaging/smoke_test.py --binary "$CYRRUS_BIN"
+
+      - name: Name asset and compute SHA-256
+        shell: bash
+        run: |
+          ASSET="cyrrus-${RUNNER_OS}-${RUNNER_ARCH}"
+          if [ "$RUNNER_OS" = "Windows" ]; then ASSET="$ASSET.exe"; fi
+          mkdir -p release-assets
+          cp "$CYRRUS_BIN" "release-assets/$ASSET"
+          python -c "import hashlib, pathlib, sys; p = pathlib.Path('release-assets') / sys.argv[1]; d = hashlib.sha256(p.read_bytes()).hexdigest(); out = p.with_name(p.name + '.sha256'); out.write_text(d + '  ' + p.as_posix() + '\n', encoding='utf-8'); print(out.read_text(), end='')" "$ASSET"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyrrus-${{ runner.os }}-${{ runner.arch }}
+          path: cyrrus/release-assets/*
+          if-no-files-found: error
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release upload "$TAG" release-assets/* --clobber

@@ -157,6 +157,17 @@ def cmd_init(args) -> None:
         interactive_mode(args.template, args.tone, args.output)
 
 
+def _doctor_symbol(status: str) -> str:
+    """Return a status marker that the current stdout encoding can print."""
+    symbol = {"ok": "✓", "warning": "!", "error": "✗"}.get(status, "?")
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        symbol.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return {"ok": "OK", "warning": "!", "error": "X"}.get(status, "?")
+    return symbol
+
+
 def cmd_doctor(args) -> None:
     """Run diagnostic checks."""
     config = load_config(project_dir=Path(args.config) if args.config else None)
@@ -168,7 +179,7 @@ def cmd_doctor(args) -> None:
         print(f"Overall status: {result['overall_status'].upper()}")
         print()
         for check in result["checks"]:
-            status_symbol = "✓" if check["status"] == "ok" else ("!" if check["status"] == "warning" else "✗")
+            status_symbol = _doctor_symbol(check["status"])
             print(f"{status_symbol} {check['name']}: {check['message']}")
 
 
