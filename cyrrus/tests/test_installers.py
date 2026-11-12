@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SH = ROOT / "scripts" / "install.sh"
 PS1 = ROOT / "scripts" / "install.ps1"
+DOCS = ROOT / "docs" / "INSTALL.md"
 
 
 def test_installer_scripts_exist():
@@ -22,6 +23,23 @@ def test_shell_installer_contract():
     assert "TODO" in text  # remove --prerelease once a stable release exists
     assert "sudo" not in text
     assert "setx" not in text.lower()
+
+
+def test_install_guide_uses_real_repo_paths():
+    text = DOCS.read_text(encoding="utf-8")
+    assert "kikuska/cyrrus" not in text
+    assert (
+        "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1"
+        in text
+    )
+    assert (
+        "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh"
+        in text
+    )
+    assert (
+        "github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe"
+        in text
+    )
 
 
 def test_powershell_installer_contract():
