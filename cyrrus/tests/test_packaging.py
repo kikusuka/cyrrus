@@ -38,6 +38,13 @@ def test_spec_collects_all_cyrrus_submodules():
     assert "console=True" in text
 
 
+def test_spec_supports_onedir_mode():
+    text = SPEC.read_text(encoding="utf-8")
+    assert "CYRRUS_ONEDIR" in text
+    assert "COLLECT(" in text
+    assert "exclude_binaries=True" in text
+
+
 def test_entrypoint_uses_console_main():
     text = ENTRY.read_text(encoding="utf-8")
     assert "from cyrrus.cli import main" in text
@@ -58,6 +65,16 @@ def test_workflow_triggers_matrix_and_release_upload():
     assert "actions/upload-artifact" in text
     assert "actions/checkout" in text
     assert "setup-python" in text
+
+
+def test_workflow_ships_windows_onedir_zip_alongside_onefile():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "CYRRUS_ONEDIR=1" in text
+    assert "shutil.make_archive" in text
+    assert "cyrrus-Windows-%s" in text
+    assert "onedir-smoke" in text
+    assert "zipfile.ZipFile" in text
+    assert '--binary "onedir-smoke/cyrrus/cyrrus.exe"' in text
 
 
 def test_workflow_pr_builds_without_uploads_and_release_job_owns_write():

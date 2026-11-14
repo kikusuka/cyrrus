@@ -1,16 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Build a single-file ``cyrrus`` executable with PyInstaller.
+"""Build a ``cyrrus`` executable with PyInstaller.
 
 Run from the project root:
 
     python -m PyInstaller packaging/cyrrus.spec --noconfirm
 
-The result is ``dist/cyrrus`` (``dist\\cyrrus.exe`` on Windows).  One-file
-mode is used on purpose: non-developers get one file to download, check and
-run.  All ``cyrrus`` submodules are collected explicitly so the UI and the
-optional gateway pieces are not missed by static analysis.
+The default is one-file mode: ``dist/cyrrus`` (``dist\\cyrrus.exe`` on Windows).
+Non-developers get one file to download, check and run.  Set
+``CYRRUS_ONEDIR=1`` to build the same entry point as an onedir folder instead:
+``dist/cyrrus/cyrrus`` (``cyrrus.exe`` on Windows).  The folder starts much
+faster because it does not extract the bundled runtime to a temporary
+directory on every launch, but it has to be shipped (and extracted) as a
+folder/zip rather than copied as a single file.
+
+All ``cyrrus`` submodules are collected explicitly so the UI and the optional
+gateway pieces are not missed by static analysis.
 """
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -19,6 +26,7 @@ ROOT = Path(SPECPATH).resolve().parent
 
 hiddenimports = collect_submodules("cyrrus")
 datas = collect_data_files("cyrrus")
+onedir = os.environ.get("CYRRUS_ONEDIR") == "1"
 
 a = Analysis(
     [str(ROOT / "packaging" / "entrypoint.py")],
@@ -35,12 +43,7 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+common = dict(
     name="cyrrus",
     debug=False,
     bootloader_ignore_signals=False,
@@ -55,3 +58,30 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+if onedir:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        **common
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="cyrrus",
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        **common
+    )

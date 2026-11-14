@@ -57,20 +57,35 @@ here; its non-interactive form was run against the standalone binary (section
 
 ## 2. Standalone binary (no Python)
 
-Download the asset for your platform from the latest release:
+Windows releases ship two layouts:
 
-* `cyrrus-Windows-X64.exe`
+* `cyrrus-Windows-X64.zip` — recommended. Extract the whole folder and run
+  `cyrrus\cyrrus.exe`; cold start took 0.79-0.83 s (median 0.79 s) on this
+  machine because the runtime is not unpacked on every launch.
+* `cyrrus-Windows-X64.exe` — optional single file. It needs no extraction, but
+  each cold start unpacks the bundled runtime first and took 2.43-2.72 s
+  (median 2.60 s) here. Use it only when one file is a hard requirement.
+
+macOS and Linux releases use the one-file layout:
+
 * `cyrrus-Linux-X64`
 * `cyrrus-macOS-X64` or `cyrrus-macOS-ARM64`
 
 Example download (Windows PowerShell):
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe" -OutFile "cyrrus.exe"
+Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.zip" -OutFile "cyrrus-Windows-X64.zip"
+Expand-Archive .\cyrrus-Windows-X64.zip -DestinationPath .
 ```
 
-**NOT RUN**: no GitHub release with binaries exists yet. The binary was built
-locally instead and tested from an empty folder.
+The optional single-file asset is downloaded the same way:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe" -OutFile "cyrrus-Windows-X64.exe"
+```
+
+**NOT RUN** as written: no GitHub release with binaries exists yet. Both
+layouts were built locally instead and tested from an empty folder.
 
 ### Check the SHA-256 before running it
 
@@ -79,13 +94,17 @@ Every release asset has a matching `.sha256` file.
 Windows:
 
 ```powershell
-Get-FileHash .\cyrrus.exe -Algorithm SHA256
-Get-Content .\cyrrus.exe.sha256
+Get-FileHash .\cyrrus-Windows-X64.zip -Algorithm SHA256
+Get-Content .\cyrrus-Windows-X64.zip.sha256
+Get-FileHash .\cyrrus-Windows-X64.exe -Algorithm SHA256
+Get-Content .\cyrrus-Windows-X64.exe.sha256
 ```
 
-The `Get-FileHash` command was run against the locally built binary and
-returned `4790B5D001548A8B6ED02FDEC424013F0D00ECC01B276D15260ECDF71A1FE704`.
-`Get-Content` was not run for a release checksum file (no release exists yet).
+Both `Get-FileHash` commands were run against the locally built zip and exe and
+matched their generated `.sha256` values. `Get-Content` was not run for a
+release checksum file (no release exists yet). The hashes are build-specific;
+compare against the file shipped with the same build, do not copy a value from
+this draft.
 
 Linux:
 
@@ -94,9 +113,8 @@ sha256sum cyrrus-Linux-X64
 cat cyrrus-Linux-X64.sha256
 ```
 
-The `sha256sum` form was run on the Windows build (`sha256sum cyrrus.exe`,
-Git Bash) and matched `Get-FileHash`. `cat` of a release checksum file was
-**NOT RUN**.
+The `sha256sum` form was run on the Windows builds (Git Bash) and matched.
+`cat` of a release checksum file was **NOT RUN**.
 
 macOS:
 
@@ -110,8 +128,8 @@ cat cyrrus-macOS-ARM64.sha256
 ### Run it
 
 ```powershell
-.\cyrrus.exe --version
-.\cyrrus.exe doctor
+.\cyrrus\cyrrus.exe --version
+.\cyrrus\cyrrus.exe doctor
 ```
 
 Both commands were run from an empty folder with
@@ -121,9 +139,10 @@ Both commands were run from an empty folder with
 cyrrus 0.3.0b6
 ```
 
-`doctor` printed its checks and exited normally. On Linux/macOS run
-`./cyrrus --version`; that form was **NOT RUN** because only the Windows binary
-was built locally.
+`doctor` printed its checks and exited normally. To use the optional
+single-file build instead, run `.\cyrrus-Windows-X64.exe --version`. On
+Linux/macOS run `./cyrrus --version`; that form was **NOT RUN** because only
+the Windows binaries were built locally.
 
 **Limitation:** a frozen binary does not discover third-party
 `cyrrus.plugins` entry points. Use pip or the uv installer if you need a
@@ -180,9 +199,10 @@ python -m pip uninstall -y cyrrus
 Run inside the Docker container and verified:
 `Successfully uninstalled cyrrus-0.3.0b6`.
 
-Standalone binary: delete the downloaded file and its `.sha256` file. No
-system files were written, so there is nothing else to remove. **NOT RUN** as a
-command (the local test binary was kept for the report).
+Standalone binary: delete the downloaded zip and the extracted `cyrrus` folder
+(or the single-file exe) and its `.sha256` file. No system files were written,
+so there is nothing else to remove. **NOT RUN** as a command (the local test
+binaries were kept for the report).
 
 ## 5. Troubleshooting: "command not found" / "not recognized"
 

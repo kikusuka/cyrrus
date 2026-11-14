@@ -37,6 +37,10 @@ def test_install_guide_uses_real_repo_paths():
         in text
     )
     assert (
+        "github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.zip"
+        in text
+    )
+    assert (
         "github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe"
         in text
     )

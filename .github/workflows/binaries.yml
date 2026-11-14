@@ -55,6 +55,25 @@ jobs:
         shell: bash
         run: python packaging/smoke_test.py --binary "$CYRRUS_BIN"
 
+      - name: Build Windows onedir folder and zip
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          CYRRUS_ONEDIR=1 python -m PyInstaller packaging/cyrrus.spec --noconfirm \
+            --distpath dist-onedir --workpath build-onedir
+          test -f dist-onedir/cyrrus/cyrrus.exe
+          mkdir -p release-assets
+          python -c "import os, shutil; shutil.make_archive('release-assets/cyrrus-Windows-%s' % os.environ['RUNNER_ARCH'], 'zip', root_dir='dist-onedir')"
+          test -f "release-assets/cyrrus-Windows-${RUNNER_ARCH}.zip"
+
+      - name: Smoke-test Windows onedir zip
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          rm -rf onedir-smoke
+          python -c "import os, zipfile; zipfile.ZipFile('release-assets/cyrrus-Windows-%s.zip' % os.environ['RUNNER_ARCH']).extractall('onedir-smoke')"
+          python packaging/smoke_test.py --binary "onedir-smoke/cyrrus/cyrrus.exe"
+
       - name: Name asset and compute SHA-256
         shell: bash
         run: |
@@ -62,7 +81,17 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then ASSET="$ASSET.exe"; fi
           mkdir -p release-assets
           cp "$CYRRUS_BIN" "release-assets/$ASSET"
-          python -c "import hashlib, pathlib, sys; p = pathlib.Path('release-assets') / sys.argv[1]; d = hashlib.sha256(p.read_bytes()).hexdigest(); out = p.with_name(p.name + '.sha256'); out.write_text(d + '  ' + p.as_posix() + '\n', encoding='utf-8'); print(out.read_text(), end='')" "$ASSET"
+          python - <<'PY'
+          import hashlib
+          import pathlib
+          for path in sorted(pathlib.Path("release-assets").iterdir()):
+              if not path.is_file() or path.suffix == ".sha256":
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              out = path.with_name(path.name + ".sha256")
+              out.write_text(digest + "  " + path.as_posix() + "\n", encoding="utf-8")
+              print(out.read_text(), end="")
+          PY
 
       # Uploads are release-only.  pull_request and workflow_dispatch runs
       # build and smoke-test every runner but leave no artifacts behind.
