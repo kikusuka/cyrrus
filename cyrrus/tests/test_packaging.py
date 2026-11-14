@@ -58,3 +58,27 @@ def test_workflow_triggers_matrix_and_release_upload():
     assert "actions/upload-artifact" in text
     assert "actions/checkout" in text
     assert "setup-python" in text
+
+
+def test_workflow_pr_builds_without_uploads_and_release_job_owns_write():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "pull_request:" in text
+    assert "paths:" in text
+    for path in ("cyrrus/packaging/**", "cyrrus/scripts/**", ".github/workflows/binaries.yml"):
+        assert path in text, "PR path filter missing: %s" % path
+    assert "\n  build:" in text and "\n  upload:" in text
+    # Only the dedicated upload job gets write; the workflow and build default
+    # to read.
+    assert text.count("\n      contents: write\n") == 1
+    assert "\n  upload:\n" in text
+    upload = text.split("\n  upload:\n", 1)[1]
+    assert "contents: write" in upload
+    assert "actions/download-artifact@v4" in upload
+    assert "gh release upload" in upload
+    # Both the upload job and the artifact staging step are release-only.
+    assert text.count("if: github.event_name == 'release'") == 2
+    build = text.split("\n  upload:\n", 1)[0]
+    assert "actions/upload-artifact@v4" in build
+    staging = build.split("- name: Stage workflow artifact", 1)[1]
+    assert "if: github.event_name == 'release'" in staging
+

@@ -3,15 +3,24 @@ name: binaries
 "on":
   release:
     types: [published]
+  pull_request:
+    paths:
+      - "cyrrus/packaging/**"
+      - "cyrrus/scripts/**"
+      - ".github/workflows/binaries.yml"
   workflow_dispatch:
 
+# Default is read-only.  The release upload job below opts in to
+# contents: write; pull_request builds must never have write access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -55,18 +64,36 @@ jobs:
           cp "$CYRRUS_BIN" "release-assets/$ASSET"
           python -c "import hashlib, pathlib, sys; p = pathlib.Path('release-assets') / sys.argv[1]; d = hashlib.sha256(p.read_bytes()).hexdigest(); out = p.with_name(p.name + '.sha256'); out.write_text(d + '  ' + p.as_posix() + '\n', encoding='utf-8'); print(out.read_text(), end='')" "$ASSET"
 
-      - name: Upload workflow artifact
+      # Uploads are release-only.  pull_request and workflow_dispatch runs
+      # build and smoke-test every runner but leave no artifacts behind.
+      - name: Stage workflow artifact
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: cyrrus-${{ runner.os }}-${{ runner.arch }}
           path: cyrrus/release-assets/*
           if-no-files-found: error
 
+  upload:
+    name: upload release assets
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job allowed to write: it publishes the already-built assets.
+    permissions:
+      contents: write
+    steps:
+      - name: Download staged assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
       - name: Upload to GitHub release
-        if: github.event_name == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${{ github.event.release.tag_name }}"
           gh release upload "$TAG" release-assets/* --clobber
