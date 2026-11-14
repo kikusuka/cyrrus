@@ -37,7 +37,7 @@ from .config import (
     validate_config,
 )
 from .services import detect_services, get_service, list_services
-from .tools import check_connection, list_models
+from .tools import check_connection, list_models, command_on_path_hint
 from .ui.caps import Caps, COLOR_NONE, detect_caps
 from .ui.theme import Theme, should_animate
 from .ui.widgets import (
@@ -734,6 +734,9 @@ def run_setup(
 
     write("")
     write("Setup complete. Cyrrus is configured.")
+    hint = command_on_path_hint()
+    if hint:
+        write(hint)
 
     if dry_run:
         write("Dry run finished; nothing was written.")

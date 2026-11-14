@@ -1,0 +1,128 @@
+name: binaries
+
+"on":
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - "cyrrus/packaging/**"
+      - "cyrrus/scripts/**"
+      - ".github/workflows/binaries.yml"
+  workflow_dispatch:
+
+# Default is read-only.  The release upload job below opts in to
+# contents: write; pull_request builds must never have write access.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: cyrrus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install project and PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+
+      - name: Build one-file binary
+        shell: bash
+        run: |
+          python -m PyInstaller packaging/cyrrus.spec --noconfirm \
+            --distpath dist-binaries --workpath build-pyinstaller
+          BIN=dist-binaries/cyrrus
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN="$BIN.exe"; fi
+          test -f "$BIN"
+          echo "CYRRUS_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Smoke-test binary
+        shell: bash
+        run: python packaging/smoke_test.py --binary "$CYRRUS_BIN"
+
+      - name: Build Windows onedir folder and zip
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          CYRRUS_ONEDIR=1 python -m PyInstaller packaging/cyrrus.spec --noconfirm \
+            --distpath dist-onedir --workpath build-onedir
+          test -f dist-onedir/cyrrus/cyrrus.exe
+          mkdir -p release-assets
+          python -c "import os, shutil; shutil.make_archive('release-assets/cyrrus-Windows-%s' % os.environ['RUNNER_ARCH'], 'zip', root_dir='dist-onedir')"
+          test -f "release-assets/cyrrus-Windows-${RUNNER_ARCH}.zip"
+
+      - name: Smoke-test Windows onedir zip
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          rm -rf onedir-smoke
+          python -c "import os, zipfile; zipfile.ZipFile('release-assets/cyrrus-Windows-%s.zip' % os.environ['RUNNER_ARCH']).extractall('onedir-smoke')"
+          python packaging/smoke_test.py --binary "onedir-smoke/cyrrus/cyrrus.exe"
+
+      - name: Name asset and compute SHA-256
+        shell: bash
+        run: |
+          ASSET="cyrrus-${RUNNER_OS}-${RUNNER_ARCH}"
+          if [ "$RUNNER_OS" = "Windows" ]; then ASSET="$ASSET.exe"; fi
+          mkdir -p release-assets
+          cp "$CYRRUS_BIN" "release-assets/$ASSET"
+          python - <<'PY'
+          import hashlib
+          import pathlib
+          for path in sorted(pathlib.Path("release-assets").iterdir()):
+              if not path.is_file() or path.suffix == ".sha256":
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              out = path.with_name(path.name + ".sha256")
+              out.write_text(digest + "  " + path.as_posix() + "\n", encoding="utf-8")
+              print(out.read_text(), end="")
+          PY
+
+      # Uploads are release-only.  pull_request and workflow_dispatch runs
+      # build and smoke-test every runner but leave no artifacts behind.
+      - name: Stage workflow artifact
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyrrus-${{ runner.os }}-${{ runner.arch }}
+          path: cyrrus/release-assets/*
+          if-no-files-found: error
+
+  upload:
+    name: upload release assets
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job allowed to write: it publishes the already-built assets.
+    permissions:
+      contents: write
+    steps:
+      - name: Download staged assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload to GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release upload "$TAG" release-assets/* --clobber
