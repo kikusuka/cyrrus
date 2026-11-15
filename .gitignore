@@ -12,6 +12,13 @@ assets/
 *.egg-info/
 dist/
 build/
+# PyInstaller and release scratch output
+build-onedir/
+dist-onedir/
+build-pyinstaller/
+dist-binaries/
+release-assets/
+pytest_output.txt
 debug_*.py
 run_step*.py
 do_commits.py

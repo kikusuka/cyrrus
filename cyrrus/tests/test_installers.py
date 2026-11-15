@@ -30,7 +30,6 @@ def test_shell_installer_contract():
 
 def test_install_guide_uses_real_repo_paths():
     text = DOCS.read_text(encoding="utf-8")
-    assert "kikuska/cyrrus" not in text
     assert (
         "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1"
         in text
@@ -39,14 +38,32 @@ def test_install_guide_uses_real_repo_paths():
         "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh"
         in text
     )
+
+    # Release assets are versioned per platform and architecture.  "latest"
+    # ignores pre-releases, and every Cyrrus release is currently a
+    # pre-release, so a latest URL would 404.
+    assert "releases/latest" not in text
+    assert "cyrrus-Windows-X64" not in text
+    assert "cyrrus-<version>-<os>-<arch>.<ext>" in text
+    assert "releases/download/v0.3.0b6/SHA256SUMS" in text
     assert (
-        "github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.zip"
-        in text
+        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-windows-x64.zip" in text
     )
     assert (
-        "github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe"
-        in text
+        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-macos-arm64.tar.gz" in text
     )
+    assert (
+        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-linux-x64.tar.gz" in text
+    )
+    for asset in (
+        "cyrrus-0.3.0b6-windows-x64.zip",
+        "cyrrus-0.3.0b6-windows-arm64.zip",
+        "cyrrus-0.3.0b6-macos-arm64.tar.gz",
+        "cyrrus-0.3.0b6-macos-x64.tar.gz",
+        "cyrrus-0.3.0b6-linux-x64.tar.gz",
+        "cyrrus-0.3.0b6-linux-arm64.tar.gz",
+    ):
+        assert asset in text
 
 
 def test_powershell_installer_contract():
