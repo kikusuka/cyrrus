@@ -1,94 +1,83 @@
-# Sphinx: a small, secure Docker image for hosting cyrrus.
+# Cyrrus gateway container.
 #
-# Build:
-#   docker build -t ghcr.io/kikusuka/cyrrus:VERSION .
+# Single stage: python:3.13-slim plus the pinned PyPI package.  There is no
+# compiler/toolchain stage because Cyrrus's core has no third-party
+# dependencies.
 #
-# Run (loopback-only, no network exposure by default):
-#   docker run --rm -v cyrrus-data:/data ghcr.io/kikusuka/cyrrus:VERSION cyrrus --config /data/config.json serve
+# Build (CYRRUS_VERSION is required; there is no "latest" default):
+#   docker build --build-arg CYRRUS_VERSION=0.3.0b6 -t cyrrus:0.3.0b6 .
 #
-# To expose the gateway on a host port, configure an api_key_env in the config
-# and map the port manually, e.g.:
-#   docker run --rm -p 8787:8787 -v cyrrus-data:/data \
-#     ghcr.io/kikusuka/cyrrus:VERSION cyrrus --config /data/config.json serve
+# Default run (safe: the gateway stays on 127.0.0.1 inside the container and is
+# not reachable from the host; /data is a fresh named volume):
+#   docker run --rm -v cyrrus-data:/data cyrrus:0.3.0b6
 #
-# The image runs as non-root user uid=1000, gid=1000.
-# A data directory volume (/data) persists config and memory db.
+# Public run on this machine only (the tested configuration):
+#   1. Copy docs/docker.config.example.json to a private directory.
+#   2. Set gateway.host to "0.0.0.0" and gateway.api_key_env to the NAME of an
+#      environment variable, e.g. CYRRUS_GATEWAY_TOKEN.
+#   3. Set provider.api_key_env to the NAME of the OUTGOING provider key
+#      variable, e.g. OPENAI_API_KEY (or remove the provider key for a local
+#      provider).
+#   4. Run, binding the published port to host loopback:
+#      docker run --rm --name cyrrus \
+#        -p 127.0.0.1:8787:8787 \
+#        -v cyrrus-data:/data \
+#        -v "$PWD/cyrrus.config.json:/data/cyrrus.config.json:ro" \
+#        -e CYRRUS_GATEWAY_TOKEN=replace-with-a-long-random-token \
+#        -e OPENAI_API_KEY=replace-with-the-provider-key \
+#        cyrrus:0.3.0b6
+#
+#   5. Call it with the incoming token:
+#      curl -H "Authorization: Bearer $CYRRUS_GATEWAY_TOKEN" \
+#        http://127.0.0.1:8787/cyrrus/status
+#
+# The bind above is host-loopback only.  For real hosting, terminate TLS in a
+# reverse proxy (Caddy, nginx, Traefik) and let the proxy reach the container;
+# do not publish the plain-HTTP port directly to the internet.
+#
+# gateway.api_key_env protects INCOMING requests.  provider.api_key_env is a
+# different setting: it names the OUTGOING key Cyrrus sends to the model
+# provider.  The container never logs either value.
 
-FROM python:3.13-slim AS builder
-
-# Install build dependencies (no recommended packages to keep image small).
-RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv and pin Python 3.13 (uv supplies a shared libpython required by PyInstaller).
-ENV UV_VERSION=0.13.8
-RUN curl -fLsSf "https://astral.sh/uv/install.sh" | sh
-
-# Create a non-root user before installing the app.
-# Group 1000 may not exist yet in the base image; create it if needed.
-RUN groupadd -f -g 1000 cyrrus || true && \
-    useradd -m -u 1000 -g cyrrus cyrrus
-
-# Install cyrrus from PyPI (pre-release allowed) into the user's tool directory.
-# The uv installer respects the current user, so it installs to the cyrrus user's
-# ~/.local/bin.  We switch to the cyrrus user before running it.
-USER cyrrus
-ENV PATH="/home/cyrrus/.local/bin:$PATH"
-RUN uv tool install --prerelease allow cyrrus
-
-# ---- Runtime stage ----
 FROM python:3.13-slim
 
-# Minimal runtime deps (curl needed so uv can download Python if desired).
-RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-    && rm -rf /var/lib/apt/lists/*
+# Required; an empty value stops the build instead of silently installing
+# whatever happens to be newest.
+ARG CYRRUS_VERSION
+RUN if [ -z "$CYRRUS_VERSION" ]; then \
+        echo "CYRRUS_VERSION build arg is required (e.g. 0.3.0b6)" >&2; \
+        exit 1; \
+    fi
 
-# Create the same non-root user (uid=1000) so volumes owned by it survive restarts.
-# Do this as root first, then switch to the new user.
-RUN groupadd -f -g 1000 cyrrus || true && \
-    useradd -m -u 1000 -g cyrrus cyrrus
+# Install the exact PyPI release into the system environment.
+RUN python -m pip install --no-cache-dir "cyrrus==${CYRRUS_VERSION}"
 
-# Install uv (runtime needs it for tool management).
-# The uv installer respects the current user, so it installs to the cyrrus user's
-# ~/.local/bin because we are already USER cyrrus.
+# Non-root runtime user.  UID/GID 1000 matches the conventional first user on
+# Linux hosts, so a bind-mounted data directory is writable without chown.
+# /data is created and owned before USER, so a fresh named volume inherits that
+# ownership and cyrrus can create the SQLite database there.
+RUN groupadd --gid 1000 cyrrus \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/cyrrus \
+        --shell /usr/sbin/nologin cyrrus \
+    && mkdir -p /data \
+    && chown cyrrus:cyrrus /data
+
+VOLUME ["/data"]
+EXPOSE 8787
+
 USER cyrrus
-ENV UV_VERSION=0.13.8
-RUN curl -fLsSf "https://astral.sh/uv/install.sh" | sh
-
-# Install the cyrrus tool (re-installed so the runtime image only carries what's needed).
-ENV PATH="/home/cyrrus/.local/bin:$PATH"
-RUN uv tool install --prerelease allow cyrrus
-
-# Working directory and data directory.
 WORKDIR /home/cyrrus
-ENV DATA_DIR=/data
-# The /data directory is intended to be mounted at runtime via:
-#   docker run -v cyrrus-data:/data ...
-# The VOLUME directive below marks it for that purpose.  We do not mkdir during
-# build because the cyrrus user does not have permission to create directories
-# in the root-owned image filesystem; instead, the host provides the volume.
-VOLUME ["$DATA_DIR"]
 
-# Entrypoint: cyrrus with a config path.
-# The config file may set api_key_env; if it does, non-loopback binding is
-# allowed (Bearer token auth).  If api_key_env is unset or empty, the gateway
-# binds to 127.0.0.1 only — no network exposure in the default configuration.
-# The CLI expects the subcommand (e.g. "serve") as the first positional argument.
-ENTRYPOINT ["cyrrus"]
-CMD ["serve", "--config", "/data/config.json"]
+# Python-only healthcheck (the slim image has no curl).  It reads the mounted
+# config, and if gateway.api_key_env is set it sends that token, so it works
+# whether /health is public or authenticated in the installed release.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import json, os, urllib.request; p='/data/cyrrus.config.json'; c=json.load(open(p)) if os.path.exists(p) else {}; g=c.get('gateway', {}); e=g.get('api_key_env'); r=urllib.request.Request('http://127.0.0.1:%d/health' % g.get('port', 8787)); t=os.environ.get(e) if e else None; r.add_header('Authorization', 'Bearer ' + t) if t else None; urllib.request.urlopen(r, timeout=3)"]
 
-# ---------- Buildx multi-arch workflow snippet (GitHub Actions) ----------
-# The following snippet is for .github/workflows/docker.yml; it is NOT part of
-# the Dockerfile itself but shown for completeness.
-#
-# api-key-env note:
-#   Set CYRRUS_AUTH_TOKEN_ENV in the config to require a bearer token on
-#   incoming requests.  The gateway uses a constant-time compare (never logs
-#   the token).  If unset, the gateway binds to 127.0.0.1 only — this image
-#   defaults to that safe configuration.
+# Exec form, so the cyrrus process is PID 1 and receives signals directly.
+# STOPSIGNAL SIGINT uses the gateway's existing Ctrl+C path: it stops accepting
+# requests, drains pending record_turn work (gateway.shutdown_timeout, 30 s by
+# default), then exits.  Use `docker stop --timeout 40` if a large backlog may
+# need the full drain budget.
+STOPSIGNAL SIGINT
+CMD ["cyrrus", "serve", "--config", "/data"]
