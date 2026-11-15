@@ -1,6 +1,7 @@
 import asyncio
 import http.client
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -86,6 +87,34 @@ def _request(base, payload, headers=None):
     return urlopen(request)
 
 
+AUTH_ENV = "CYRRUS_DIST3_AUTH_TOKEN"
+AUTH_KEY = "s3cret-token-abc"
+
+
+def _call(base, method, path, headers=None, payload=None):
+    """Return (status, body) without raising on 4xx/5xx."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = Request(base + path, data=data, headers=headers or {}, method=method)
+    try:
+        response = urlopen(request, timeout=5)
+    except HTTPError as exc:
+        return exc.code, exc.read()
+    try:
+        return response.status, response.read()
+    finally:
+        response.close()
+
+
+def _auth_config(monkeypatch, key=AUTH_KEY):
+    if key is None:
+        monkeypatch.delenv(AUTH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(AUTH_ENV, key)
+    config = _config()
+    config["gateway"]["api_key_env"] = AUTH_ENV
+    return config
+
+
 def test_public_context_and_record_turn(tmp_path):
     async def run():
         projector = _projector(tmp_path)
@@ -119,6 +148,154 @@ def test_tools_are_not_altered(tmp_path):
 def test_non_loopback_requires_key():
     with pytest.raises(ValueError, match="Non-loopback"):
         create_server(_config(), host="0.0.0.0")
+
+
+def test_non_loopback_requires_key_when_env_var_is_unset(monkeypatch):
+    monkeypatch.delenv(AUTH_ENV, raising=False)
+    config = _auth_config(monkeypatch, key=None)
+    server = None
+    try:
+        with pytest.raises(ValueError, match="unset or empty"):
+            server = create_server(config, host="0.0.0.0")
+    finally:
+        if server is not None:
+            server.server_close()
+            server.gateway.close()
+
+
+def test_non_loopback_requires_key_when_env_var_is_empty(monkeypatch):
+    monkeypatch.setenv(AUTH_ENV, "")
+    config = _auth_config(monkeypatch, key="")
+    server = None
+    try:
+        with pytest.raises(ValueError, match="unset or empty"):
+            server = create_server(config, host="0.0.0.0")
+    finally:
+        if server is not None:
+            server.server_close()
+            server.gateway.close()
+
+
+def test_configured_missing_key_refuses_even_on_loopback(monkeypatch):
+    monkeypatch.delenv(AUTH_ENV, raising=False)
+    config = _auth_config(monkeypatch, key=None)
+    server = None
+    try:
+        with pytest.raises(ValueError, match="unset or empty"):
+            server = create_server(config, host="127.0.0.1")
+    finally:
+        if server is not None:
+            server.server_close()
+            server.gateway.close()
+
+
+# kind: public (always 200), protected (200 with key), unknown (404 with key).
+_AUTH_ROUTES = [
+    ("GET", "/health", None, "public"),
+    ("GET", "/cyrrus/status", None, "protected"),
+    ("GET", "/cyrrus/last", None, "protected"),
+    ("GET", "/v1/models", None, "protected"),
+    ("POST", "/v1/chat/completions",
+     {"model": "x", "messages": [{"role": "user", "content": "hi"}]}, "protected"),
+    ("GET", "/cyrrus/admin/does-not-exist", None, "unknown"),
+]
+
+
+@pytest.mark.parametrize("method,path,payload,kind", _AUTH_ROUTES,
+                         ids=[route[1] for route in _AUTH_ROUTES])
+def test_gateway_auth_route_matrix(tmp_path, monkeypatch, method, path, payload, kind):
+    upstream = _fake_upstream()
+    config = _auth_config(monkeypatch)
+    config["provider"]["base_url"] = "http://127.0.0.1:%s/v1" % upstream.server_address[1]
+    server = create_server(config, projector=_projector(tmp_path), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        cases = [
+            ("no header", {}, 401 if kind != "public" else 200),
+            ("wrong key", {"Authorization": "Bearer not-the-key"},
+             401 if kind != "public" else 200),
+            ("right key", {"Authorization": "Bearer " + AUTH_KEY},
+             404 if kind == "unknown" else 200),
+            # Token case is significant: the right key in the wrong case fails.
+            ("right key, wrong case", {"Authorization": "Bearer " + AUTH_KEY.upper()},
+             401 if kind != "public" else 200),
+            # Exactly one space after the scheme; token whitespace is rejected.
+            ("right key, double space", {"Authorization": "Bearer  " + AUTH_KEY},
+             401 if kind != "public" else 200),
+            ("right key, trailing space", {"Authorization": "Bearer " + AUTH_KEY + " "},
+             401 if kind != "public" else 200),
+            ("right key, leading space", {"Authorization": "Bearer  " + AUTH_KEY + " "},
+             401 if kind != "public" else 200),
+        ]
+        for label, headers, expected in cases:
+            status, body = _call(base, method, path, headers=headers, payload=payload)
+            assert status == expected, "%s %s [%s] -> %s %r" % (
+                method, path, label, status, body[:200])
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_bearer_scheme_is_case_insensitive(tmp_path, monkeypatch):
+    config = _auth_config(monkeypatch)
+    server = create_server(config, projector=_projector(tmp_path), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        for scheme in ("bearer", "BEARER", "BeArEr"):
+            status, body = _call(
+                base, "GET", "/cyrrus/status",
+                headers={"Authorization": scheme + " " + AUTH_KEY},
+            )
+            assert status == 200, (scheme, status, body[:200])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_malformed_authorization_headers_are_rejected(tmp_path, monkeypatch):
+    config = _auth_config(monkeypatch)
+    server = create_server(config, projector=_projector(tmp_path), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        for value in ("Bearer", "Bearer ", "Token " + AUTH_KEY,
+                      AUTH_KEY, "", "Bearer\t" + AUTH_KEY):
+            status, body = _call(
+                base, "GET", "/cyrrus/status",
+                headers={"Authorization": value},
+            )
+            assert status == 401, (value, status, body[:200])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_auth_token_is_never_logged_or_echoed(tmp_path, monkeypatch, caplog):
+    config = _auth_config(monkeypatch)
+    server = create_server(config, projector=_projector(tmp_path), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%s" % server.server_address[1]
+    try:
+        caplog.set_level(logging.DEBUG, logger="cyrrus.gateway")
+        status, _ = _call(base, "GET", "/cyrrus/status",
+                          headers={"Authorization": "Bearer " + AUTH_KEY})
+        assert status == 200
+        status, body = _call(base, "GET", "/cyrrus/status",
+                             headers={"Authorization": "Bearer wrong-token"})
+        assert status == 401
+        assert AUTH_KEY not in caplog.text
+        assert AUTH_KEY.encode() not in body
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_status_and_last_do_not_contain_prompt(tmp_path):
