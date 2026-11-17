@@ -24,6 +24,8 @@ facts-onnx = [
 facts-torch = [
     "gliner>=0.2.5",
 ]
+# Optional Textual interface: cyrrus ui
+ui = ["textual>=8.2,<9"]
 
 [project.scripts]
 cyrrus = "cyrrus.cli:main"
