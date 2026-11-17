@@ -1,0 +1,30 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                        ╭──────────────────────────────────────────────────────────────────────╮                        
+                        │                                                                      │                        
+                        │  Keys                                                                │                        
+                        │                                                                      │                        
+                        │  q       Quit                                                        │                        
+                        │  ?       Help                                                        │                        
+                        │  T       Theme                                                       │                        
+                        │  r       Refresh                                                     │                        
+                        │  /       Search                                                      │                        
+                        │  o       Add repo                                                    │                        
+                        │  n       New                                                         │                        
+                        │  Enter   Open                                                        │                        
+                        │  Delete  Forget                                                      │                        
+                        │  1-5     Session tabs                                                │                        
+                        │  Esc     Back                                                        │                        
+                        │  ^p      Command palette                                             │                        
+                        │                                                                      │                        
+                        │  Esc or ? to close                                                   │                        
+                        │                                                                      │                        
+                        ╰──────────────────────────────────────────────────────────────────────╯                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

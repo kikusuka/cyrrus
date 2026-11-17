@@ -149,7 +149,7 @@ class Panel(Container):
 
     DEFAULT_CSS = """
     Panel {
-        border: round $text-muted;
+        border: round #808080;
         background: $background;
         color: $foreground;
         padding: 0 1;
@@ -216,7 +216,7 @@ class MonoTable(DataTable):
     }
     MonoTable > .datatable--header {
         background: $surface;
-        color: $text-muted;
+        color: #808080;
         text-style: bold;
     }
     MonoTable > .datatable--cursor {
@@ -243,16 +243,16 @@ VerticalScroll, ScrollableContainer {
     scrollbar-size-vertical: 1;
     scrollbar-size-horizontal: 0;
     scrollbar-background: $surface;
-    scrollbar-color: $text-muted;
-    scrollbar-color-hover: $text-muted;
+    scrollbar-color: #808080;
+    scrollbar-color-hover: #808080;
     scrollbar-color-active: $primary;
 }
 MonoTable {
     scrollbar-size-vertical: 1;
     scrollbar-size-horizontal: 0;
     scrollbar-background: $surface;
-    scrollbar-color: $text-muted;
-    scrollbar-color-hover: $text-muted;
+    scrollbar-color: #808080;
+    scrollbar-color-hover: #808080;
     scrollbar-color-active: $primary;
 }
 """
@@ -271,7 +271,6 @@ class Toast(Static):
         padding: 0 1;
         width: auto;
         height: 1;
-        margin-top: 1;
     }
     """
 
@@ -286,6 +285,7 @@ class ToastStack(Vertical):
         width: 100%;
         height: auto;
         max-height: 8;
+        margin-bottom: 1;
         align-horizontal: right;
         padding: 0 1;
     }
@@ -408,7 +408,7 @@ class FormDialog(ModalScreen):
         margin-bottom: 1;
     }
     FormDialog Label {
-        color: $text-muted;
+        color: #808080;
         text-style: dim;
     }
     FormDialog Input {
@@ -573,4 +573,5 @@ class PickerBackdrop(BackdropScreen):
         background: $background 80%;
     }
     """
+
 

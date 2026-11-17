@@ -1,4 +1,4 @@
-"""Monochrome design system for the optional cyrrus UI.
+﻿"""Monochrome design system for the optional cyrrus UI.
 
 The brief's mapping table is the source of truth: one hand-authored
 black/grey/white palette, hierarchy carried by bold, dim, reverse and
@@ -102,6 +102,7 @@ def theme_css(no_color: Optional[bool] = None) -> str:
 Screen {
     background: $background;
     color: $foreground;
+    layers: base toasts;
 }
 .topbar {
     height: 1;
@@ -120,18 +121,18 @@ Screen {
     text-style: bold;
 }
 .topbar .help {
-    color: $cyrrus-faint;
+    color: #808080;
 }
 .panel {
-    border: round $cyrrus-rule;
+    border: round #808080;
     background: $background;
     color: $foreground;
 }
 .panel:focus-within {
-    border: round $cyrrus-rule-focus;
+    border: round $foreground;
 }
 .panel-title {
-    color: $cyrrus-muted;
+    color: #808080;
     text-style: bold;
 }
 .panel:focus-within .panel-title {
@@ -142,16 +143,16 @@ Screen {
     text-style: bold;
 }
 .muted {
-    color: $cyrrus-muted;
+    color: #808080;
     text-style: dim;
 }
 .faint {
-    color: $cyrrus-faint;
+    color: #808080;
     text-style: dim;
 }
 .selected {
-    background: $cyrrus-selected-bg;
-    color: $cyrrus-selected-fg;
+    background: $foreground;
+    color: $background;
     text-style: reverse bold;
 }
 .state-clean, .state-dirty, .state-ahead, .state-behind,
@@ -163,10 +164,10 @@ Screen {
     height: 1;
 }
 .tabbar .tab {
-    color: $cyrrus-muted;
+    color: #808080;
 }
 .tabbar .tab.active {
-    color: $cyrrus-tab-active;
+    color: $primary;
     text-style: bold underline;
 }
 .footer {
@@ -181,8 +182,8 @@ Screen {
     color: $foreground;
 }
 .toast {
-    background: $cyrrus-toast-bg;
-    color: $cyrrus-toast-fg;
+    background: $foreground;
+    color: $background;
     text-style: reverse bold;
 }
 .panel-title, .heading {
@@ -204,19 +205,19 @@ class Glyphs:
 
 
 _BASIC = Glyphs(
-    check="\u221a",          # √
-    cross="\u00d7",          # ×
-    bullet="\u00b7",         # ·
+    check="\u221a",          # âˆš
+    cross="\u00d7",          # Ã—
+    bullet="\u00b7",         # Â·
     arrow="->",
     spinner="|/-\\",
     ramp="\u00b7\u2591\u2592\u2593\u2588",
     spark="\u00b7\u2591\u2592\u2593\u2588",
 )
 _FULL = Glyphs(
-    check="\u2713",          # ✓
-    cross="\u00d7",          # ×
-    bullet="\u00b7",         # ·
-    arrow="\u2192",          # →
+    check="\u2713",          # âœ“
+    cross="\u00d7",          # Ã—
+    bullet="\u00b7",         # Â·
+    arrow="\u2192",          # â†’
     spinner="\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f",
     ramp="\u00b7\u2591\u2592\u2593\u2588",
     spark="\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588",
@@ -250,7 +251,7 @@ def glyphs() -> Glyphs:
 
 
 def density_ramp(values: Sequence[float], maximum: Optional[float] = None) -> str:
-    """Map numeric intensities onto ``·░▒▓█`` (heat and 30-day ramps)."""
+    """Map numeric intensities onto ``Â·â–‘â–’â–“â–ˆ`` (heat and 30-day ramps)."""
     ramp = glyphs().ramp
     series = list(values)
     if not series:
@@ -302,3 +303,5 @@ def state_text(state: str, text: Optional[str] = None) -> str:
     }
     prefix = labels.get(state, "?")
     return prefix + (" " + text if text else "")
+
+

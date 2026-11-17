@@ -1,0 +1,30 @@
+ cyrrus  ·  by Breezy Labs  3 sessions  ·  2 need attention   ? help                                                    
+‹ Lobby  Overview  Facts  Trace  History  Settings                                                                      
+╭─ SESSIONS ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  SESSION   FACTS  LAST ACTIVE  30 DAYS                                                                               │
+│  work      12     2m ago       ·░▒▓█·▒                                                                               │
+│  personal  7      1d ago       ··░▒··█                                                                               │
+│  scratch   3      9d ago       ······░                                                                               │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+                                                                                                      ! Fact forgotten  
+ q Quit  ? Help  o Add  n New  c Clone  del Remove  / Search  r Refresh ▏^p palette                                     
