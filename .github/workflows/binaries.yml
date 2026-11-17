@@ -197,7 +197,7 @@ jobs:
               set -euo pipefail
               ldd --version | sed -n "1p"
               # The manylinux /opt/python builds are compiled without a shared
-              # libpython, which PyInstaller requires.  Use uv's standalone
+              # libpython, which PyInstaller requires.  Use the uv standalone
               # CPython (shared library) inside the same old-glibc image.
               export PATH="$HOME/.local/bin:$PATH"
               if ! command -v uv >/dev/null 2>&1; then
