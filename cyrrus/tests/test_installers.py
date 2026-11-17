@@ -32,7 +32,7 @@ def test_shell_installer_contract():
     assert "setx" not in text.lower()
 
 
-def test_install_guide_uses_real_repo_paths():
+def test_install_guide_uses_stable_aliases_and_explicit_pins():
     text = DOCS.read_text(encoding="utf-8")
     assert (
         "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1"
@@ -43,31 +43,52 @@ def test_install_guide_uses_real_repo_paths():
         in text
     )
 
-    # Release assets are versioned per platform and architecture.  "latest"
-    # ignores pre-releases, and every Cyrrus release is currently a
-    # pre-release, so a latest URL would 404.
-    assert "releases/latest" not in text
-    assert "cyrrus-Windows-X64" not in text
-    assert "cyrrus-<version>-<os>-<arch>.<ext>" in text
-    assert "releases/download/v0.3.0b6/SHA256SUMS" in text
-    assert (
-        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-windows-x64.zip" in text
-    )
-    assert (
-        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-macos-arm64.tar.gz" in text
-    )
-    assert (
-        "releases/download/v0.3.0b6/cyrrus-0.3.0b6-linux-x64.tar.gz" in text
-    )
-    for asset in (
-        "cyrrus-0.3.0b6-windows-x64.zip",
-        "cyrrus-0.3.0b6-windows-arm64.zip",
-        "cyrrus-0.3.0b6-macos-arm64.tar.gz",
-        "cyrrus-0.3.0b6-macos-x64.tar.gz",
-        "cyrrus-0.3.0b6-linux-x64.tar.gz",
-        "cyrrus-0.3.0b6-linux-arm64.tar.gz",
+    # Stable downloads must use a versionless alias under latest/download.
+    for alias in (
+        "cyrrus-windows-x64.zip",
+        "cyrrus-windows-arm64.zip",
+        "cyrrus-macos-arm64.tar.gz",
+        "cyrrus-macos-x64.tar.gz",
+        "cyrrus-linux-x64.tar.gz",
+        "cyrrus-linux-arm64.tar.gz",
     ):
-        assert asset in text
+        assert "releases/latest/download/" + alias in text
+        assert alias in text
+
+    # Exact versions remain available for reproducible installs.
+    assert "releases/download/v0.3.0/SHA256SUMS" in text
+    assert "releases/download/v0.3.0/cyrrus-0.3.0-windows-x64.zip" in text
+    assert "releases/download/v0.3.0/cyrrus-0.3.0-linux-x64.tar.gz" in text
+    assert "sha256sum -c SHA256SUMS" in text
+    assert "12 lines" in text
+
+    # Stable installs must not tell users to pass the pip --pre flag.
+    assert "pip install --pre" not in text
+    assert "python -m pip install --pre" not in text
+    assert "chmod +x" in text
+    assert "Gatekeeper" in text
+    assert "SmartScreen" in text
+
+
+def test_readme_installs_a_stable_release_and_documents_the_token_limit():
+    root = (ROOT.parent / "README.md").read_text(encoding="utf-8")
+    package = (ROOT / "README.md").read_text(encoding="utf-8")
+    for text in (root, package):
+        assert "pip install --pre" not in text
+        assert "## Install" in text
+        assert "releases/latest" in text
+    assert "raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh" in package
+    assert "python -m pip install cyrrus" in package
+    for heading in (
+        "What's measured",
+        "Known limitations",
+        "Seeing what cyrrus did",
+        "Plugins",
+        "Experimental embedding retriever",
+    ):
+        assert "## " + heading in package
+    assert "does **not** enforce a minimum length" in package
+    assert "long random token" in package
 
 
 def test_powershell_installer_contract():

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0
+
+First stable release. If you are upgrading from `0.2.0`, the `0.3.0b1`-`b6`
+pre-releases are rolled up here; the notable changes are below.
+
+### Fixed
+- `ask()` stores extracted facts before returning (bounded by `flush_timeout`, default 10 s). Previously the last turn's facts were cancelled when the event loop closed.
+- Retrieval ranks all active facts for a session, not only the 100 most recently accessed; `memory_search` uses the same path. Cached indexes no longer go stale after another connection writes.
+- The SQLite backend no longer closes a shared connection during a routine WAL checkpoint under load, which could segfault on Linux. File replacement is detected by device and inode, and connection reset is guarded by a lock.
+- Gateway context work runs on one persistent event loop; requests no longer fail open or silently skip memory under concurrency. Shutdown drains served turns (`gateway.shutdown_timeout`, default 30 s) and logs anything it could not record.
+- Ghost slides expire after exactly `max_ghost_turns`, and memory facts are re-retrieved each turn instead of sticking in the slide tray.
+- Python 3.9: asyncio locks are created lazily, so `Projector` can be built outside a running event loop.
+
+### Added
+- `cyrrus serve`: a local OpenAI-compatible gateway with `inject`/`manage` modes, session and skip headers, fail-open behavior, `/cyrrus/status`, and `/cyrrus/last` decision traces without prompt text or fact values by default.
+- `cyrrus setup`, `cyrrus home`, `cyrrus doctor`, and memory/session/config CLI commands.
+- `process_sync()`, `flush_sync()` and `close_sync()` for scripts without an async loop.
+- `forget_fact()`, `forget_session()` and `export_facts()`.
+- Pluggable `tokenizer`, `renderer`, `fact_extractor` and `history_summarizer`, plus retriever/packer/backend plugin slots. Plugins are loaded only when selected.
+- Optional hybrid retrieval (keyword plus embeddings), off by default and experimental.
+- Stable installers (`scripts/install.sh`, `scripts/install.ps1`) using `uv`, standalone binaries for Windows/macOS/Linux x64 and arm64, and a Docker image.
+- `devtools/bench`: a deterministic, offline injection-quality and latency benchmark (source repository only).
+
+### Changed
+- The default database is now a per-user data directory. Set `memory_db_path` or `CYRRUS_DB_PATH` to keep the old location.
+- `max_facts_per_session` defaults to unlimited (previously 500); fact values are accepted up to 2000 characters.
+- Semantic retrieval is opt-in. The default is keyword BM25; `cyrrus[embeddings]` adds fastembed and numpy. `embedding_min_score` controls the cosine threshold.
+- Installers no longer pass `--prerelease` by default. Set `CYRRUS_PRERELEASE=1` only to install a pre-release that PyPI does not select automatically.
+- Equal-score retrieval ties break by fact key instead of recency, so rankings are deterministic.
+- Release workflow uploads stable versionless aliases next to the versioned binaries, and `SHA256SUMS` lists both.
+
 ## 0.3.0b6
 
 ### Fixed
