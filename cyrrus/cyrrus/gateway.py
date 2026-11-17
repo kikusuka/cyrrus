@@ -6,6 +6,7 @@ the base installation.  It is a proxy, not a chat UI.
 import asyncio
 import concurrent.futures
 import copy
+import hmac
 import json
 import logging
 import os
@@ -437,12 +438,35 @@ class Gateway:
         return os.environ.get(env_name) or self.dotenv.get(env_name)
 
     def authorize(self, headers):
+        """Check the incoming Bearer token, if gateway.api_key_env is set.
+
+        The scheme is case-insensitive (RFC 7235); the token is compared
+        exactly and case-sensitively in constant time.  Missing, malformed,
+        duplicated-whitespace or wrongly-cased headers are rejected.  The
+        supplied and expected tokens are never logged.
+        """
         env_name = self.options.get("api_key_env")
         if not env_name:
             return True
         expected = self._secret(env_name)
-        supplied = headers.get("Authorization", "")
-        return bool(expected and supplied == "Bearer " + expected)
+        if not expected or not expected.strip():
+            # create_server() refuses to start in this state; fail closed if a
+            # Gateway was constructed directly.
+            return False
+        supplied = headers.get("Authorization")
+        if not isinstance(supplied, str):
+            return False
+        scheme, separator, token = supplied.partition(" ")
+        if separator != " " or scheme.lower() != "bearer" or not token:
+            return False
+        # One space after the scheme only: no leading/trailing/internal
+        # whitespace inside the token, so "Bearer  key" and "Bearer key " fail.
+        if token != token.strip() or any(char.isspace() for char in token):
+            return False
+        try:
+            return hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))
+        except (UnicodeError, TypeError):
+            return False
 
     def session_for(self, headers, payload):
         return headers.get("X-Cyrrus-Session") or payload.get("user") or self.options["session"]
@@ -579,9 +603,13 @@ def make_handler(gateway):
             return False
 
         def do_GET(self):
-            if not self._auth(): return
+            # /health is intentionally public: it reveals only liveness and is
+            # used by the container HEALTHCHECK.  Every other route below,
+            # including /v1/models, /cyrrus/status and /cyrrus/last, requires
+            # the Bearer token whenever gateway.api_key_env is set.
             if self.path == "/health":
                 return self._json(200, {"status": "ok"})
+            if not self._auth(): return
             if self.path == "/cyrrus/status":
                 return self._json(200, {"gateway": {k: v for k, v in gateway.options.items() if k != "api_key_env"}, "counters": gateway.counter_snapshot()})
             if self.path == "/cyrrus/last":
@@ -669,7 +697,15 @@ def make_handler(gateway):
 def create_server(config, projector=None, host=None, port=None, log_prompts=False):
     options = config["gateway"]
     host = host or options["host"]; port = options["port"] if port is None else port
-    if not _is_loopback(host) and not options.get("api_key_env"):
+    env_name = options.get("api_key_env")
+    if env_name:
+        secret = os.environ.get(env_name) or load_dotenv().get(env_name)
+        if not secret or not secret.strip():
+            raise ValueError(
+                "gateway.api_key_env %r is unset or empty; refusing to start "
+                "without auth" % env_name
+            )
+    elif not _is_loopback(host):
         raise ValueError("Non-loopback gateway binding requires gateway.api_key_env")
     gateway = Gateway(config, projector=projector, log_prompts=log_prompts)
     while True:

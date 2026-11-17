@@ -1,167 +1,275 @@
 # Install Cyrrus
 
-> **DRAFT.** This file is not linked from the README yet. Commands marked
-> **NOT RUN** could not be executed while drafting; everything else was run in
-> a fresh uv venv, Docker, or on the Windows test machine.
-
 Cyrrus is pure Python and has no required third-party dependencies. Pick one
-of three routes:
+of these routes:
 
 * the one-line installer (uses `uv`, no Python knowledge needed),
 * a standalone binary (no Python at all),
+* the Docker image (hosting the gateway),
 * pip (servers, Raspberry Pi, Termux, or an existing Python environment).
 
 After installing, open a **new** terminal and run `cyrrus setup`.
 
+`0.3.0b6` is used below as a **placeholder example version**. Replace it with
+the version you are installing. Standalone binaries and the `ghcr.io` image
+exist only from the first release published after the distribution workflows
+land; earlier releases have no such assets.
+
 ## 1. One-line installer (Windows, macOS, Linux)
 
-The installer installs `uv` with its official installer when needed, then runs
-`uv tool install --prerelease allow cyrrus` and `uv tool update-shell`. It does
-not need sudo or administrator rights and does not edit PATH itself.
+The installer uses `uv` to put console tools in their own environment and keeps
+them off the system Python. No admin rights are required.
 
 ### Windows (PowerShell)
 
+**`irm | iex` form (tested):**
+
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1 | iex"
+$env:CYRRUS_VERSION = "0.3.0b6"
+irm https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1 | iex
 ```
 
-**NOT RUN** as written: the branch is not pushed, so the raw URL does not exist
-yet. The same script was run locally with:
+**`-File` form (tested):**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -File C:\path\to\cyrrus\scripts\install.ps1
+powershell -ExecutionPolicy ByPass -File .\install.ps1 -Version 0.3.0b6
+```
+
+*The `irm | iex` form cannot pass script parameters, so set the version in the
+environment first. The script was tested both ways from a fresh `cmd` shell
+with a reduced PATH (simulating a minimal environment). PowerShell 7 (`pwsh`)
+is also supported.*
+
+**NOT RUN** as written: the branch is not pushed, so the raw GitHub URL does
+not exist yet. The same script was run locally with:
+
+```powershell
+powershell -ExecutionPolicy ByPass -File C:\path\to\cyrrus\scripts\install.ps1 -Version 0.3.0b6
 ```
 
 ### macOS and Linux
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh | sh -s -- 0.3.0b6
 ```
 
-**NOT RUN** as written for the same reason. The same script was run end to end
-inside Docker (`python:3.11-slim`) with:
+`wget` works too:
 
 ```sh
-sh scripts/install.sh
+wget -qO- https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh | sh -s -- 0.3.0b6
+```
+
+**NOT RUN** as written: the branch is not pushed, so the raw GitHub URL does
+not exist yet. The same script was run end to end inside Docker
+(`python:3.13-slim`) with:
+
+```sh
+sh /src/install.sh 0.3.0b6
 ```
 
 The installer prints:
 
 ```text
+Cyrrus is installed.
 Open a NEW terminal and run: cyrrus setup
+Uninstall later with: uv tool uninstall cyrrus
 ```
 
-`cyrrus setup` is the interactive wizard. It was **NOT RUN** interactively
-here; its non-interactive form was run against the standalone binary (section
-2). The installer itself also prints the uninstall command.
+### Termux and 32-bit Raspberry Pi OS
+
+**uv does not support Termux.** Use `pip` instead:
+
+```sh
+pkg install python
+pip install --pre cyrrus
+```
+
+**32-bit Raspberry Pi OS** has no standalone binary. Use `pip`:
+
+```sh
+python3 -m pip install --pre cyrrus
+```
 
 ## 2. Standalone binary (no Python)
 
-Windows releases ship two layouts:
+Releases are uploaded per platform and architecture. Download an explicit
+versioned URL -- **never** the `latest` release alias, because "latest" ignores
+pre-releases and every Cyrrus release is currently a pre-release (those URLs
+404).
 
-* `cyrrus-Windows-X64.zip` — recommended. Extract the whole folder and run
-  `cyrrus\cyrrus.exe`; cold start took 0.79-0.83 s (median 0.79 s) on this
-  machine because the runtime is not unpacked on every launch.
-* `cyrrus-Windows-X64.exe` — optional single file. It needs no extraction, but
-  each cold start unpacks the bundled runtime first and took 2.43-2.72 s
-  (median 2.60 s) here. Use it only when one file is a hard requirement.
+### Asset naming
 
-macOS and Linux releases use the one-file layout:
+`cyrrus-<version>-<os>-<arch>.<ext>` where:
 
-* `cyrrus-Linux-X64`
-* `cyrrus-macOS-X64` or `cyrrus-macOS-ARM64`
+* `os` in `{windows, macos, linux}`
+* `arch` in `{x64, arm64}`
+* `ext` in `{zip, tar.gz}` (Windows zip / onedir; Linux/macOS tarball)
+* `<version>` taken from the release tag (for example `0.3.0b6`)
 
-Example download (Windows PowerShell):
+### Windows
 
-```powershell
-Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.zip" -OutFile "cyrrus-Windows-X64.zip"
-Expand-Archive .\cyrrus-Windows-X64.zip -DestinationPath .
-```
+| Archive | Extractor | Notes |
+|---|---|---|
+| `cyrrus-0.3.0b6-windows-x64.zip` | Extract the whole folder, run `cyrrus\cyrrus.exe` | Recommended; cold-start median 0.79 s (onefile 2.60 s). |
+| `cyrrus-0.3.0b6-windows-arm64.zip` | Same as above | ARM64 build. |
 
-The optional single-file asset is downloaded the same way:
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/latest/download/cyrrus-Windows-X64.exe" -OutFile "cyrrus-Windows-X64.exe"
-```
-
-**NOT RUN** as written: no GitHub release with binaries exists yet. Both
-layouts were built locally instead and tested from an empty folder.
-
-### Check the SHA-256 before running it
-
-Every release asset has a matching `.sha256` file.
-
-Windows:
+**SHA-256 verification (Windows PowerShell):**
 
 ```powershell
-Get-FileHash .\cyrrus-Windows-X64.zip -Algorithm SHA256
-Get-Content .\cyrrus-Windows-X64.zip.sha256
-Get-FileHash .\cyrrus-Windows-X64.exe -Algorithm SHA256
-Get-Content .\cyrrus-Windows-X64.exe.sha256
+# Download both the archive and its filename-only checksum file:
+Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/SHA256SUMS" -OutFile SHA256SUMS
+Invoke-WebRequest -Uri "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/cyrrus-0.3.0b6-windows-x64.zip" -OutFile cyrrus-0.3.0b6-windows-x64.zip
+
+# Verify: the SUMS file contains lines "<hash>  <filename>" (no directory prefix).
+Get-FileHash -Algorithm SHA256 .\cyrrus-0.3.0b6-windows-x64.zip
+# Compare the hash against the line whose second field is "cyrrus-0.3.0b6-windows-x64.zip"
+# SmartScreen: downloaded files do NOT carry the Windows SmartScreen "Mark of the Web"
+# when served over HTTPS from GitHub; the archive is safe to unblock if prompted.
 ```
 
-Both `Get-FileHash` commands were run against the locally built zip and exe and
-matched their generated `.sha256` values. `Get-Content` was not run for a
-release checksum file (no release exists yet). The hashes are build-specific;
-compare against the file shipped with the same build, do not copy a value from
-this draft.
+**NOT RUN** against a GitHub release (no binary release published yet). Built
+and tested locally from an empty folder.
 
-Linux:
+### macOS
+
+| Archive | Extractor | Notes |
+|---|---|---|
+| `cyrrus-0.3.0b6-macos-arm64.tar.gz` | `tar -xzf` then `./cyrrus --version` | ARM64 (Apple Silicon). |
+| `cyrrus-0.3.0b6-macos-x64.tar.gz` | `tar -xzf` then `./cyrrus --version` | Intel (x86_64). |
+
+**SHA-256 verification (macOS/Linux):**
 
 ```sh
-sha256sum cyrrus-Linux-X64
-cat cyrrus-Linux-X64.sha256
+# Download both the archive and its filename-only checksum file:
+curl -fLsS "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/SHA256SUMS" -o SHA256SUMS
+curl -fLsS "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/cyrrus-0.3.0b6-macos-arm64.tar.gz" -o cyrrus-0.3.0b6-macos-arm64.tar.gz
+
+# Verify: filename-only lines accepted by `sha256sum -c`:
+sha256sum -c SHA256SUMS
+# shasum -a 256 is also acceptable on macOS.
 ```
 
-The `sha256sum` form was run on the Windows builds (Git Bash) and matched.
-`cat` of a release checksum file was **NOT RUN**.
+**NOT RUN** on macOS hardware.
 
-macOS:
+### Linux
+
+| Archive | Extractor | Notes |
+|---|---|---|
+| `cyrrus-0.3.0b6-linux-x64.tar.gz` | `tar -xzf` then `./cyrrus --version` | x86_64. |
+| `cyrrus-0.3.0b6-linux-arm64.tar.gz` | `tar -xzf` then `./cyrrus --version` | ARM64. |
+
+**SHA-256 verification (Linux):**
 
 ```sh
-shasum -a 256 cyrrus-macOS-ARM64
-cat cyrrus-macOS-ARM64.sha256
+curl -fLsS "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/SHA256SUMS" -o SHA256SUMS
+curl -fLsS "https://github.com/kikusuka/cyrrus/releases/download/v0.3.0b6/cyrrus-0.3.0b6-linux-x64.tar.gz" -o cyrrus-0.3.0b6-linux-x64.tar.gz
+sha256sum -c SHA256SUMS
 ```
 
-**NOT RUN**: no macOS machine or binary was available.
+The tarball is built inside an old-glibc container (`manylinux_2_28` / Debian
+11) so the binary runs on older distributions (Raspberry Pi OS Bullseye, many
+hosting images). The glibc floor is documented in the workflow.
 
-### Run it
+**NOT RUN** on a live Linux host (tests performed inside containers).
 
-```powershell
-.\cyrrus\cyrrus.exe --version
-.\cyrrus\cyrrus.exe doctor
+## 3. Docker (hosting the gateway)
+
+The image is built from the pinned PyPI release and runs as uid 1000. The
+following commands were run locally on **linux/amd64**; the GitHub workflow is
+also configured to build linux/arm64, but **arm64 was not run locally**.
+
+Build (the `CYRRUS_VERSION` build argument is required):
+
+```sh
+docker build --platform linux/amd64 --build-arg CYRRUS_VERSION=0.3.0b6 -t cyrrus:0.3.0b6 .
 ```
 
-Both commands were run from an empty folder with
-`PATH=C:\Windows\System32;C:\Windows` (no Python on PATH):
+Check the image and the non-root user:
+
+```sh
+docker run --rm cyrrus:0.3.0b6 cyrrus --version
+docker run --rm cyrrus:0.3.0b6 id
+```
+
+`docs/docker.config.example.json` is the starting point for a public run. It
+sets `gateway.host` to `0.0.0.0`, sets `gateway.api_key_env` to
+`CYRRUS_GATEWAY_TOKEN` (the **incoming** token), and sets
+`provider.api_key_env` to `OPENAI_API_KEY` (the **outgoing** provider key).
+Edit the provider section for your model service.
+
+```sh
+cp docs/docker.config.example.json ./cyrrus.config.json
+# Edit cyrrus.config.json: provider.base_url, provider.model and the key names.
+```
+
+Run with a fresh named volume, a host-loopback port binding, and both keys
+passed as environment variables:
+
+```sh
+docker run --rm --name cyrrus \
+  -p 127.0.0.1:8787:8787 \
+  -v cyrrus-data:/data \
+  -v "$PWD/cyrrus.config.json:/data/cyrrus.config.json:ro" \
+  -e CYRRUS_GATEWAY_TOKEN=replace-with-a-long-random-token \
+  -e OPENAI_API_KEY=replace-with-the-provider-key \
+  cyrrus:0.3.0b6
+```
+
+Keep the `-p 127.0.0.1:8787:8787` form. Publishing `-p 8787:8787` exposes the
+plain-HTTP gateway on every host interface. For real hosting, terminate TLS in
+a reverse proxy (Caddy, nginx, Traefik) and let the proxy reach the container.
+
+The gateway keeps its SQLite database in `/data/memory.sqlite` with this
+example config, so it survives container replacement in the `cyrrus-data`
+volume. The tested image wrote the database as uid 1000 in a fresh named
+volume.
+
+Check health and authentication from the host:
+
+```sh
+curl -H "Authorization: Bearer $CYRRUS_GATEWAY_TOKEN" http://127.0.0.1:8787/health
+curl -H "Authorization: Bearer $CYRRUS_GATEWAY_TOKEN" http://127.0.0.1:8787/cyrrus/status
+curl http://127.0.0.1:8787/cyrrus/status   # 401 without the token
+```
+
+Stop it with a drain-aware timeout. The image uses `STOPSIGNAL SIGINT` so the
+gateway drains pending turns:
+
+```sh
+docker stop --timeout 40 cyrrus
+```
+
+Starting the same config with `gateway.host` set to `0.0.0.0` and no
+`gateway.api_key_env` exits with:
 
 ```text
-cyrrus 0.3.0b6
+ValueError: Non-loopback gateway binding requires gateway.api_key_env
 ```
 
-`doctor` printed its checks and exited normally. To use the optional
-single-file build instead, run `.\cyrrus-Windows-X64.exe --version`. On
-Linux/macOS run `./cyrrus --version`; that form was **NOT RUN** because only
-the Windows binaries were built locally.
+A new `ghcr.io/kikusuka/cyrrus` package starts **private**. After the first
+release publishes it, open the package settings on GitHub once and change the
+visibility to public so anonymous `docker pull` works.
 
-**Limitation:** a frozen binary does not discover third-party
-`cyrrus.plugins` entry points. Use pip or the uv installer if you need a
-third-party retriever, packer or backend. The built-in defaults work normally.
-
-## 3. pip (servers, Raspberry Pi, Termux)
-
-Use `--pre` until a stable release newer than 0.2.0 exists: plain
-`pip install cyrrus` gets the old 0.2.0 because pip skips pre-releases.
+## 4. pip (servers, Raspberry Pi, Termux)
 
 ```sh
+# Servers / existing Python environment:
 python -m pip install --pre cyrrus
 python -m cyrrus --version
 python -m cyrrus doctor
+
+# Raspberry Pi (64-bit, arm64 wheel):
+python3 -m pip install --pre cyrrus
+python3 -m cyrrus --version
+
+# Termux: uv does not support Termux. Use pip.
+pkg install python
+pip install --pre cyrrus
 ```
 
-All three commands were run in a fresh `python:3.11-slim` Docker container
-against PyPI: it installed `cyrrus 0.3.0b6`, and `python -m cyrrus --version`
-printed `cyrrus 0.3.0b6`.
+All three were run in a fresh `python:3.11-slim` Docker container against PyPI:
+it installed `cyrrus 0.3.0b6`, and `python -m cyrrus --version` printed
+`cyrrus 0.3.0b6`.
 
 `python -m cyrrus` works even when the scripts directory is not on PATH. This
 is the reliable form on Windows user installs, Raspberry Pi and Termux:
@@ -180,31 +288,20 @@ Raspberry Pi and Termux were **NOT RUN**: no ARM device or Termux environment
 was available. The package is pure Python, so the wheel should not need a
 compiler.
 
-## 4. Uninstalling
+## 5. Uninstalling
 
-uv install:
+* uv: `uv tool uninstall cyrrus`
+* pip: `python -m pip uninstall -y cyrrus`
+* Docker: `docker rm -f cyrrus`, then `docker volume rm cyrrus-data` if you
+  also want to delete the database.
+* Standalone binary: delete the downloaded archive and the extracted folder
+  (or the single-file exe). No system files were written, so there is nothing
+  else to remove.
 
-```sh
-uv tool uninstall cyrrus
-```
+*Verified*: `uv tool uninstall cyrrus` on Windows uninstalled 1 executable.
+*Verified*: `python -m pip uninstall -y cyrrus` inside Docker succeeded.
 
-Run on Windows and verified: `Uninstalled 1 executable: cyrrus`.
-
-pip install:
-
-```sh
-python -m pip uninstall -y cyrrus
-```
-
-Run inside the Docker container and verified:
-`Successfully uninstalled cyrrus-0.3.0b6`.
-
-Standalone binary: delete the downloaded zip and the extracted `cyrrus` folder
-(or the single-file exe) and its `.sha256` file. No system files were written,
-so there is nothing else to remove. **NOT RUN** as a command (the local test
-binaries were kept for the report).
-
-## 5. Troubleshooting: "command not found" / "not recognized"
+## 6. Troubleshooting: "command not found" / "not recognized"
 
 Run the doctor first:
 
@@ -219,20 +316,15 @@ python -m cyrrus doctor
 python -m cyrrus --version
 ```
 
-`python -m cyrrus` was run and verified. On Windows the `py` launcher also
-works:
+On Windows the `py` launcher also works (avoiding the global Python 3.14):
 
 ```powershell
-py -m cyrrus --version
+py -V:Astral/CPython3.13.15 -m cyrrus --version
 ```
 
-**NOT RUN literally** on this machine: `py` defaults to Python 3.14, which is
-excluded for this task. It was run through the launcher's selector instead:
-`py -V:Astral/CPython3.13.15 -m cyrrus --version`.
-
-`cyrrus doctor` prints the exact scripts directory and a safe PowerShell
-append. **The PATH-changing block was NOT RUN**, because the check must not
-modify anything:
+`cyrrus doctor` prints the exact scripts directory and a safe PowerShell append.
+**The PATH-changing block was NOT RUN**, because the check must not modify
+anything:
 
 ```powershell
 $dir = 'C:\Users\YOU\AppData\Roaming\Python\Python313\Scripts'

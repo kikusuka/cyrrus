@@ -112,6 +112,17 @@ class TestValidateConfig:
         result = validate_config(DEFAULTS.copy())
         assert result == DEFAULTS
 
+    def test_validate_config_returns_independent_defaults(self):
+        """Mutating one config must not leak into DEFAULTS or later configs."""
+        first = validate_config({"provider": {}})
+        first["gateway"]["api_key_env"] = "LEAKED_TOKEN_ENV"
+        first["context"]["max_context_tokens"] = 1
+
+        second = validate_config({"provider": {}})
+        assert second["gateway"]["api_key_env"] is None
+        assert second["context"]["max_context_tokens"] == 4000
+        assert DEFAULTS["gateway"]["api_key_env"] is None
+
     def test_validate_config_empty(self):
         """Test validating empty config fills with defaults."""
         result = validate_config({})

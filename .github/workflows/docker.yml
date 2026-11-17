@@ -1,0 +1,104 @@
+name: docker
+
+"on":
+  pull_request:
+    # Only a Dockerfile or workflow change needs a container build.
+    paths:
+      - "Dockerfile"
+      - ".github/workflows/docker.yml"
+  release:
+    types: [published]
+
+# Read-only by default.  Only the release publish job below opts in to
+# packages: write; pull-request builds can never push.
+permissions:
+  contents: read
+
+jobs:
+  build-pr:
+    name: build linux/amd64 + linux/arm64 (no push)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The Dockerfile installs cyrrus==${CYRRUS_VERSION} from PyPI.  0.3.0b6
+      # is the current published pre-release and is used for all PR builds.
+      - name: Build both architectures without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            CYRRUS_VERSION=0.3.0b6
+
+  publish-release:
+    name: publish linux/amd64 + linux/arm64 to ghcr.io
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    # The only job with write access, and only to the container registry.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve version and tags
+        id: meta
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -z "$version" ]; then
+            echo "release tag produced an empty version: $TAG" >&2
+            exit 1
+          fi
+          tags="ghcr.io/kikusuka/cyrrus:${version}"
+          # A new ghcr package starts private; make it public once in the
+          # GitHub package settings.  "latest" is only for stable releases.
+          if [ "$PRERELEASE" = "false" ]; then
+            tags="${tags},ghcr.io/kikusuka/cyrrus:latest"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "Publishing $tags from $TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push both architectures
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/kikusuka/cyrrus
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          build-args: |
+            CYRRUS_VERSION=${{ steps.meta.outputs.version }}

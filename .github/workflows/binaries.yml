@@ -10,21 +10,55 @@ name: binaries
       - ".github/workflows/binaries.yml"
   workflow_dispatch:
 
-# Default is read-only.  The release upload job below opts in to
+# Default is read-only.  Only the release upload job below opts in to
 # contents: write; pull_request builds must never have write access.
 permissions:
   contents: read
 
+env:
+  # Release assets are named from the tag (v0.3.0b6 -> 0.3.0b6).  Pull
+  # request and manual builds use a placeholder because they never upload.
+  CYRRUS_VERSION: "${{ github.event.release.tag_name || '0.0.0-dev' }}"
+
 jobs:
-  build:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  # Runner labels checked 2026-11-15 against
+  # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+  # All six targets below are standard GitHub-hosted runners for both public
+  # and private repositories:
+  #   Windows x64    windows-2025
+  #   Windows ARM64  windows-11-arm
+  #   macOS arm64    macos-15
+  #   macOS Intel    macos-15-intel
+  #   Linux x64      ubuntu-24.04
+  #   Linux ARM64    ubuntu-24.04-arm
+  build-desktop:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows
+            runner: windows-2025
+            arch: x64
+            ext: zip
+          - os: windows
+            runner: windows-11-arm
+            arch: arm64
+            ext: zip
+          - os: macos
+            runner: macos-15
+            arch: arm64
+            ext: tar.gz
+          - os: macos
+            runner: macos-15-intel
+            arch: x64
+            ext: tar.gz
+    env:
+      PLATFORM: ${{ matrix.os }}
+      ARCH: ${{ matrix.arch }}
     defaults:
       run:
         working-directory: cyrrus
@@ -34,6 +68,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          architecture: ${{ matrix.arch }}
 
       - name: Install project and PyInstaller
         shell: bash
@@ -41,56 +76,75 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install . pyinstaller
 
-      - name: Build one-file binary
+      - name: Build onedir binary
         shell: bash
+        env:
+          CYRRUS_ONEDIR: "1"
         run: |
           python -m PyInstaller packaging/cyrrus.spec --noconfirm \
-            --distpath dist-binaries --workpath build-pyinstaller
-          BIN=dist-binaries/cyrrus
+            --distpath dist-onedir --workpath build-onedir
+          BIN=dist-onedir/cyrrus/cyrrus
           if [ "$RUNNER_OS" = "Windows" ]; then BIN="$BIN.exe"; fi
           test -f "$BIN"
-          echo "CYRRUS_BIN=$BIN" >> "$GITHUB_ENV"
 
-      - name: Smoke-test binary
-        shell: bash
-        run: python packaging/smoke_test.py --binary "$CYRRUS_BIN"
-
-      - name: Build Windows onedir folder and zip
-        if: runner.os == 'Windows'
+      - name: Smoke-test built binary
         shell: bash
         run: |
-          CYRRUS_ONEDIR=1 python -m PyInstaller packaging/cyrrus.spec --noconfirm \
-            --distpath dist-onedir --workpath build-onedir
-          test -f dist-onedir/cyrrus/cyrrus.exe
+          BIN=dist-onedir/cyrrus/cyrrus
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN="$BIN.exe"; fi
+          python packaging/smoke_test.py --binary "$BIN"
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          VERSION="${CYRRUS_VERSION#v}"
           mkdir -p release-assets
-          python -c "import os, shutil; shutil.make_archive('release-assets/cyrrus-Windows-%s' % os.environ['RUNNER_ARCH'], 'zip', root_dir='dist-onedir')"
-          test -f "release-assets/cyrrus-Windows-${RUNNER_ARCH}.zip"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ASSET="cyrrus-${VERSION}-${PLATFORM}-${ARCH}.zip"
+            # Archive the folder contents, so the zip extracts to
+            # cyrrus.exe + _internal directly in the install directory.
+            python -c "import shutil, sys; shutil.make_archive(sys.argv[1], 'zip', root_dir='dist-onedir/cyrrus')" \
+              "release-assets/cyrrus-${VERSION}-${PLATFORM}-${ARCH}"
+          else
+            ASSET="cyrrus-${VERSION}-${PLATFORM}-${ARCH}.tar.gz"
+            tar -czf "release-assets/$ASSET" -C dist-onedir/cyrrus .
+          fi
+          test -f "release-assets/$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
-      - name: Smoke-test Windows onedir zip
-        if: runner.os == 'Windows'
+      - name: Smoke-test the packaged archive
         shell: bash
         run: |
-          rm -rf onedir-smoke
-          python -c "import os, zipfile; zipfile.ZipFile('release-assets/cyrrus-Windows-%s.zip' % os.environ['RUNNER_ARCH']).extractall('onedir-smoke')"
-          python packaging/smoke_test.py --binary "onedir-smoke/cyrrus/cyrrus.exe"
+          rm -rf package-smoke
+          mkdir -p package-smoke
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall('package-smoke')" \
+              "release-assets/$ASSET"
+            BIN=package-smoke/cyrrus.exe
+          else
+            tar -xzf "release-assets/$ASSET" -C package-smoke
+            BIN=package-smoke/cyrrus
+          fi
+          test -f "$BIN"
+          python packaging/smoke_test.py --binary "$BIN"
 
-      - name: Name asset and compute SHA-256
+      - name: Write per-asset SHA-256 line
         shell: bash
         run: |
-          ASSET="cyrrus-${RUNNER_OS}-${RUNNER_ARCH}"
-          if [ "$RUNNER_OS" = "Windows" ]; then ASSET="$ASSET.exe"; fi
-          mkdir -p release-assets
-          cp "$CYRRUS_BIN" "release-assets/$ASSET"
-          python - <<'PY'
+          # Filename only (no release-assets/ prefix), so the merged file is
+          # accepted by `sha256sum -c SHA256SUMS` after download.
+          python - "$ASSET" "$PLATFORM" "$ARCH" <<'PY'
           import hashlib
           import pathlib
-          for path in sorted(pathlib.Path("release-assets").iterdir()):
-              if not path.is_file() or path.suffix == ".sha256":
-                  continue
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              out = path.with_name(path.name + ".sha256")
-              out.write_text(digest + "  " + path.as_posix() + "\n", encoding="utf-8")
-              print(out.read_text(), end="")
+          import sys
+          name, platform, arch = sys.argv[1:4]
+          path = pathlib.Path("release-assets") / name
+          line = hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.name + "\n"
+          part = pathlib.Path("release-assets") / ("checksum-%s-%s.txt" % (platform, arch))
+          # Bytes, not text: Windows must not turn this line ending into CRLF
+          # or sha256sum -c fails on the Linux upload job.
+          part.write_bytes(line.encode("utf-8"))
+          print(line, end="")
           PY
 
       # Uploads are release-only.  pull_request and workflow_dispatch runs
@@ -99,15 +153,124 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: cyrrus-${{ runner.os }}-${{ runner.arch }}
+          name: cyrrus-${{ matrix.os }}-${{ matrix.arch }}
+          path: cyrrus/release-assets/*
+          if-no-files-found: error
+
+  # Build Linux against an old glibc floor (2.28) instead of the newest
+  # Ubuntu image.  The same tarball is then run in a second, older container
+  # so a dependency on a newer glibc fails here, not on a user's machine.
+  build-linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+            image: quay.io/pypa/manylinux_2_28_x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: quay.io/pypa/manylinux_2_28_aarch64
+    env:
+      PLATFORM: linux
+      ARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        working-directory: cyrrus
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build inside manylinux_2_28
+        shell: bash
+        env:
+          BUILD_IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e CYRRUS_ONEDIR=1 \
+            "$BUILD_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              ldd --version | sed -n "1p"
+              # The manylinux /opt/python builds are compiled without a shared
+              # libpython, which PyInstaller requires.  Use the uv standalone
+              # CPython (shared library) inside the same old-glibc image.
+              export PATH="$HOME/.local/bin:$PATH"
+              if ! command -v uv >/dev/null 2>&1; then
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+              fi
+              uv python install 3.13
+              uv venv /tmp/cyrrus-build --python 3.13
+              uv pip install --python /tmp/cyrrus-build/bin/python . pyinstaller
+              CYRRUS_ONEDIR=1 /tmp/cyrrus-build/bin/python -m PyInstaller \
+                packaging/cyrrus.spec --noconfirm \
+                --distpath dist-onedir --workpath build-onedir
+              test -x dist-onedir/cyrrus/cyrrus
+            '
+          sudo chown -R "$(id -u):$(id -g)" dist-onedir build-onedir
+
+      - name: Package Linux tarball
+        shell: bash
+        run: |
+          VERSION="${CYRRUS_VERSION#v}"
+          ASSET="cyrrus-${VERSION}-linux-${ARCH}.tar.gz"
+          mkdir -p release-assets
+          tar -czf "release-assets/$ASSET" -C dist-onedir/cyrrus .
+          test -f "release-assets/$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Smoke-test in Debian 10 (glibc 2.28)
+        shell: bash
+        run: |
+          docker run --rm \
+            -e ASSET="$ASSET" \
+            -v "$PWD/release-assets:/assets:ro" \
+            debian:10-slim \
+            bash -c '
+              set -eu
+              ldd --version | head -n 1
+              mkdir -p /tmp/cyrrus
+              tar -xzf "/assets/$ASSET" -C /tmp/cyrrus
+              /tmp/cyrrus/cyrrus --version
+              /tmp/cyrrus/cyrrus doctor
+            '
+
+      - name: Write per-asset SHA-256 line
+        shell: bash
+        run: |
+          # Filename only (no release-assets/ prefix), so the merged file is
+          # accepted by `sha256sum -c SHA256SUMS` after download.
+          python - "$ASSET" "$PLATFORM" "$ARCH" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          name, platform, arch = sys.argv[1:4]
+          path = pathlib.Path("release-assets") / name
+          line = hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.name + "\n"
+          part = pathlib.Path("release-assets") / ("checksum-%s-%s.txt" % (platform, arch))
+          # Bytes, not text: Windows must not turn this line ending into CRLF
+          # or sha256sum -c fails on the Linux upload job.
+          part.write_bytes(line.encode("utf-8"))
+          print(line, end="")
+          PY
+
+      - name: Stage workflow artifact
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyrrus-linux-${{ matrix.arch }}
           path: cyrrus/release-assets/*
           if-no-files-found: error
 
   upload:
     name: upload release assets
     if: github.event_name == 'release'
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [build-desktop, build-linux]
+    runs-on: ubuntu-24.04
     # The only job allowed to write: it publishes the already-built assets.
     permissions:
       contents: write
@@ -117,6 +280,15 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+
+      - name: Merge and verify SHA256SUMS
+        shell: bash
+        run: |
+          cd release-assets
+          cat checksum-*.txt | sort -k2 > SHA256SUMS
+          rm checksum-*.txt
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
 
       - name: Upload to GitHub release
         shell: bash
