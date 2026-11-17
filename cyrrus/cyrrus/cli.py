@@ -587,11 +587,12 @@ def cmd_home(args) -> None:
 def cmd_ui(args) -> None:
     """Open the optional Textual interface."""
     from .tui import INSTALL_HINT, UiUnavailable, run
+    argv = []
+    dump = getattr(args, "dump_frame", None)
+    if dump:
+        argv = ["--dump-frame", dump, "--size", getattr(args, "size", None) or "80x24"]
     try:
-        raise SystemExit(run([
-            "--dump-frame", getattr(args, "dump_frame", None) or "",
-            "--size", getattr(args, "size", None) or "80x24",
-        ]))
+        raise SystemExit(run(argv))
     except UiUnavailable:
         print("The cyrrus UI requires the optional 'ui' extra.", file=sys.stderr)
         print("Install it with: " + INSTALL_HINT, file=sys.stderr)
