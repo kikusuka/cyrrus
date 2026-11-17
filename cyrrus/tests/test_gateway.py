@@ -344,6 +344,22 @@ def _seeded_projector(tmp_path, session, keyword, value):
     return projector
 
 
+# The burst deliberately puts 200 client threads, 200 gateway handler threads
+# and 200 upstream handler threads on a 4-logical-core machine while the GIL
+# switch interval is 0.1 ms.  The deadline is only a bound on a wedged server,
+# not part of the invariant.  The old 30 s client timeout was an accidental
+# latency assertion: in the py3.9 full-suite run
+# test_gateway_concurrent_counters_are_exact[fail_open] logged 51
+# ``req timeout('timed out')`` errors, yet the gateway had counted 199 of 200
+# requests and all 149 responses that arrived were 200 -- the tail was still
+# being served when the clients gave up.  Measured on this machine, the same
+# burst takes ~12 s idle; with three CPU hogs its p90 response is 28.5 s and the
+# last response is 31.3 s, so 30 s cannot survive normal suite load.  120 s
+# matches the thread-join budget and leaves the 200-requests-all-200 assertion
+# unchanged.
+_BURST_DEADLINE = 120.0
+
+
 def _concurrent_requests(base, n, session, text):
     """Fire ``n`` simultaneous POSTs (released together by a barrier).
 
@@ -360,7 +376,7 @@ def _concurrent_requests(base, n, session, text):
     """
     errors, codes = [], []
     guard = threading.Lock()
-    barrier = threading.Barrier(n, timeout=120)
+    barrier = threading.Barrier(n, timeout=_BURST_DEADLINE)
     host, port = base.split("//", 1)[1].split(":", 1)
     port = int(port)
 
@@ -373,7 +389,7 @@ def _concurrent_requests(base, n, session, text):
             return
         conn = None
         try:
-            conn = http.client.HTTPConnection(host, port, timeout=30)
+            conn = http.client.HTTPConnection(host, port, timeout=_BURST_DEADLINE)
             conn.request(
                 "POST", "/v1/chat/completions",
                 body=json.dumps({"model": "x", "user": session,
@@ -401,7 +417,7 @@ def _concurrent_requests(base, n, session, text):
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=120)
+            thread.join(timeout=_BURST_DEADLINE)
     finally:
         sys.setswitchinterval(previous)
     for thread in threads:

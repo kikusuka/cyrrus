@@ -4,7 +4,10 @@ import concurrent.futures
 import importlib.util
 import json
 import os
+import shutil
 import socket
+import sys
+import sysconfig
 import urllib.request
 import urllib.error
 from typing import Dict, Any, List, Optional, Tuple
@@ -227,11 +230,91 @@ def check_connection(config: Dict[str, Any], timeout: float = 10.0) -> Dict[str,
         }
 
 
+def user_scripts_dir() -> str:
+    """Return the scripts directory pip would use for a per-user install.
+
+    On Windows this is the ``nt_user`` scheme (for example
+    ``%APPDATA%\\Python\\Python313\\Scripts``); elsewhere it is
+    ``posix_user`` (usually ``~/.local/bin``).  This function only reads
+    sysconfig and never modifies PATH or the environment.
+    """
+    scheme = "nt_user" if sys.platform == "win32" else "posix_user"
+    try:
+        path = sysconfig.get_path("scripts", scheme=scheme)
+    except (KeyError, TypeError):
+        path = None
+    return path or ""
+
+
+def command_on_path_hint() -> Optional[str]:
+    """Return a one-line setup hint when the ``cyrrus`` command is missing."""
+    if shutil.which("cyrrus"):
+        return None
+    return (
+        "Hint: `cyrrus` is not on PATH. Run `cyrrus doctor` for the exact fix "
+        "(or use `python -m cyrrus`)."
+    )
+
+
+def _command_on_path_check() -> Dict[str, Any]:
+    """Build the ``command_on_path`` doctor check without changing anything."""
+    found = shutil.which("cyrrus")
+    if found:
+        return {
+            "name": "command_on_path",
+            "status": "ok",
+            "message": "cyrrus command found at %s" % found,
+        }
+
+    scripts_dir = user_scripts_dir()
+    if sys.platform == "win32":
+        message = (
+            "cyrrus.exe was not found on PATH; a plain `cyrrus` will not be recognized.\n"
+            "The per-user console script is normally installed in:\n"
+            "  %s\n"
+            "Always-works form (no PATH change):\n"
+            "  python -m cyrrus --version\n"
+            "  py -m cyrrus --version\n"
+            "Add that directory to your USER Path in PowerShell (no admin; append only):\n"
+            "  $dir = '%s'\n"
+            "  $old = [Environment]::GetEnvironmentVariable('Path', 'User')\n"
+            "  if ($old) { $new = $old.TrimEnd(';') + ';' + $dir } else { $new = $dir }\n"
+            "  [Environment]::SetEnvironmentVariable('Path', $new, 'User')\n"
+            "Open a NEW terminal afterwards. This check did not change anything.\n"
+            "Recommended alternative (no PATH editing):\n"
+            "  uv tool install --prerelease allow cyrrus\n"
+            "  uv tool update-shell\n"
+            "  (or: pipx install --pre cyrrus)"
+        ) % (scripts_dir, scripts_dir)
+    else:
+        message = (
+            "cyrrus was not found on PATH; a plain `cyrrus` will not be recognized.\n"
+            "The per-user console script is normally installed in:\n"
+            "  %s\n"
+            "Always-works form (no PATH change):\n"
+            "  python -m cyrrus --version\n"
+            "Add that directory to your PATH in your shell profile (append safely):\n"
+            "  echo 'export PATH=\"%s:$PATH\"' >> ~/.profile\n"
+            "Open a NEW shell afterwards. This check did not change anything.\n"
+            "Recommended alternative (no PATH editing):\n"
+            "  uv tool install --prerelease allow cyrrus\n"
+            "  uv tool update-shell\n"
+            "  (or: pipx install --pre cyrrus)"
+        ) % (scripts_dir, scripts_dir)
+
+    return {
+        "name": "command_on_path",
+        "status": "warning",
+        "message": message,
+    }
+
+
 def doctor(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Run a diagnostic check on the Cyrrus installation and configuration.
 
     Checks:
+    - Command availability on PATH
     - Service detection (local services)
     - Configuration validity
     - Database accessibility
@@ -264,6 +347,10 @@ def doctor(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             }
 
     checks = []
+
+    # Check that the console command is reachable. Read-only: which() and
+    # sysconfig only inspect the environment; nothing is changed.
+    checks.append(_command_on_path_check())
 
     # Check service detection
     detected = detect_services(timeout=1.0)
