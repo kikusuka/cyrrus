@@ -4,6 +4,7 @@ Configuration system for Cyrrus.
 Manages project and user settings files with proper precedence:
 command-line flags > environment variables > project file > user file > defaults.
 """
+import copy
 import json
 import os
 import sys
@@ -159,8 +160,11 @@ def validate_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError(f"Config must be a dict, got {type(config).__name__}")
 
-    # Start with defaults and overlay the provided config
-    normalized = _deep_merge(DEFAULTS.copy(), config)
+    # Start with defaults and overlay the provided config.  Deep-copy DEFAULTS:
+    # _deep_merge() only copies the levels it visits, so a shallow copy would
+    # leave e.g. DEFAULTS["gateway"] shared and a caller mutating its config
+    # would silently change every config created later in the process.
+    normalized = _deep_merge(copy.deepcopy(DEFAULTS), config)
 
     # Validate schema_version
     if "schema_version" not in normalized:
