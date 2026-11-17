@@ -16,7 +16,7 @@ BLOCKER = r"""
 import sys
 
 class _Block:
-    def find_module(self, name, path=None):
+    def find_spec(self, name, path=None, target=None):
         if name.split(".")[0] in ("textual", "rich"):
             raise ImportError("blocked optional dependency: " + name)
         return None
