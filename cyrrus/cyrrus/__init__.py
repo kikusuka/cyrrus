@@ -22,7 +22,7 @@ from .plugins import (
     resolve_plugin,
 )
 
-__version__ = "0.3.0b6"
+__version__ = "0.3.0"
 
 def estimate_tokens(text: str) -> int:
     """Rough token count. Useful for setting 'tokens' in config manually."""
