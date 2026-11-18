@@ -12,7 +12,7 @@
 [![Zero dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](https://pypi.org/project/cyrrus/)
 
 ```bash
-pip install --pre cyrrus
+pip install cyrrus
 ```
 
 </div>
@@ -286,14 +286,29 @@ reply = bot.ask("hello")
 
 ## Install
 
+Three ways:
+
 ```bash
-pip install --pre cyrrus                   # core — zero dependencies
-pip install --pre "cyrrus[embeddings]"     # + semantic routing and memory
+# 1. pip (Python 3.9-3.13)
+python -m pip install cyrrus                 # core — zero dependencies
+python -m pip install "cyrrus[embeddings]"   # + optional semantic retrieval
 ```
+
+```powershell
+# 2. one-line installer (Windows; macOS/Linux: curl -fsSL .../install.sh | sh)
+irm https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1 | iex
+```
+
+**3. Standalone binary** (no Python): download `cyrrus-windows-x64.zip`,
+`cyrrus-macos-arm64.tar.gz`, `cyrrus-linux-x64.tar.gz` (and the other
+architecture variants) from the
+[latest release](https://github.com/kikusuka/cyrrus/releases/latest).
 
 ```python
 from cyrrus import Projector
 ```
+
+Full details, checksums and Docker: [`cyrrus/docs/INSTALL.md`](cyrrus/docs/INSTALL.md).
 
 ---
 

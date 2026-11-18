@@ -3,8 +3,12 @@
 #
 # Usage:
 #   sh install.sh                          # install from PyPI with uv
-#   sh install.sh 0.3.0b6                  # pin an exact PyPI version
-#   sh install.sh --binary --version 0.3.0b6
+#   sh install.sh 0.3.0                    # pin an exact PyPI version
+#   sh install.sh --binary --version 0.3.0
+#
+# A stable release needs no extra flags.  To install a pre-release that is not
+# selected by default, opt in explicitly:
+#   CYRRUS_PRERELEASE=1 sh install.sh
 #
 # The default mode uses uv, which installs console tools into their own
 # environment and keeps them off the system Python.  `--binary` skips Python
@@ -184,15 +188,23 @@ fi
 
 command -v uv >/dev/null 2>&1 || fail "uv is still not available. Open a new terminal and re-run this script."
 
+# Stable releases install with no special flags.  Pre-releases are opt-in.
+install_tool() {
+    if [ "${CYRRUS_PRERELEASE:-}" = "1" ]; then
+        uv tool install --prerelease allow "$@"
+    else
+        uv tool install "$@"
+    fi
+}
+
 if [ -n "$VERSION" ]; then
     VERSION="${VERSION#v}"
     say "Installing cyrrus $VERSION with uv..."
-    uv tool install --prerelease allow "cyrrus==$VERSION" \
+    install_tool "cyrrus==$VERSION" \
         || fail "uv tool install failed. Check your network connection and the version number."
 else
     say "Installing cyrrus with uv..."
-    # TODO: remove --prerelease once a stable release exists on PyPI.
-    uv tool install --prerelease allow cyrrus \
+    install_tool cyrrus \
         || fail "uv tool install failed. Check your network connection."
 fi
 

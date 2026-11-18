@@ -2,12 +2,16 @@
 #
 # Usage (normal PowerShell, no admin):
 #   powershell -ExecutionPolicy ByPass -File .\install.ps1
-#   powershell -ExecutionPolicy ByPass -File .\install.ps1 -Version 0.3.0b6
-#   powershell -ExecutionPolicy ByPass -File .\install.ps1 -Binary -Version 0.3.0b6
+#   powershell -ExecutionPolicy ByPass -File .\install.ps1 -Version 0.3.0
+#   powershell -ExecutionPolicy ByPass -File .\install.ps1 -Binary -Version 0.3.0
+#
+# A stable release needs no extra flags.  To install a pre-release that is not
+# selected by default, opt in explicitly (the irm form has no parameters):
+#   $env:CYRRUS_PRERELEASE = "1"
 #
 # The same script works with `irm <url> | iex`.  That form cannot pass script
 # parameters, so set the version and binary mode in the environment first:
-#   $env:CYRRUS_VERSION = "0.3.0b6"
+#   $env:CYRRUS_VERSION = "0.3.0"
 #   $env:CYRRUS_BINARY = "1"          # optional
 #   irm https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1 | iex
 #
@@ -133,15 +137,20 @@ function Install-CyrrusWithUv([string]$Version) {
         Fail "uv is still not available. Open a new terminal and re-run this script."
     }
 
+    $installArgs = @("tool", "install")
+    if ($env:CYRRUS_PRERELEASE -eq "1") {
+        # Stable releases install by default; pre-releases are opt-in.
+        $installArgs += @("--prerelease", "allow")
+    }
     if ($Version) {
         if ($Version.StartsWith("v")) { $Version = $Version.Substring(1) }
         Write-Host "Installing cyrrus $Version with uv..."
-        & $uv tool install --prerelease allow "cyrrus==$Version"
+        $installArgs += "cyrrus==$Version"
     } else {
         Write-Host "Installing cyrrus with uv..."
-        # TODO: remove --prerelease once a stable release exists on PyPI.
-        & $uv tool install --prerelease allow cyrrus
+        $installArgs += "cyrrus"
     }
+    & $uv @installArgs
     if ($LASTEXITCODE -ne 0) {
         Fail "uv tool install failed. Check your network connection and the version number."
     }

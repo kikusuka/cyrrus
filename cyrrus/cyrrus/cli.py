@@ -713,7 +713,7 @@ def build_parser() -> argparse.ArgumentParser:
     json_parent.add_argument("--yes", "-y", action="store_true", default=argparse.SUPPRESS, help="skip confirmation / confirm destructive operations")
 
     parser = argparse.ArgumentParser(description="Cyrrus context routing for LLM calls", parents=[json_parent])
-    parser.add_argument("--version", action="version", version="cyrrus 0.3.0b6")
+    parser.add_argument("--version", action="version", version="cyrrus 0.3.0")
     parser.add_argument("--no-color", action="store_true", help="disable colored output")
     parser.add_argument("--no-anim", action="store_true", help="disable the intro animation")
     parser.add_argument("--tour", action="store_true", help="replay the guided onboarding")

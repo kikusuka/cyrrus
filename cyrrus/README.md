@@ -59,38 +59,62 @@ The LLM receives clean, relevant context. Not a wall of everything you've ever d
 
 ## What's measured
 
-- **Zero required dependencies.** The core is standard-library only. Extras (`cyrrus[embeddings]`) are optional.
-- **Concurrency:** the gateway is tested with 200 concurrent requests, all served with memory injected and no fail-opens, repeated on Python 3.9 and 3.13 (`tests/test_gateway.py`).
-- **Retrieval at scale:** with 50,000 facts stored in one session, a typical query takes about 20 ms and a worst-case query that matches most facts about 607 ms once the search index is warm (desktop CPU, measured with the `devtools/bench` methodology in the source repository (not included in the PyPI package)). The first request after a restart builds the index, which took about 4.1 s at that size.
-- **Compatibility:** Python 3.9 to 3.13 are tested in CI on Linux.
+- **Zero required dependencies.** The core is standard-library only. Extras (`cyrrus[embeddings]`, `cyrrus[facts-onnx]`, `cyrrus[facts-torch]`) are optional.
+- **Retrieval quality:** on the holdout scenarios (never used to pick defaults) mean injection recall is **0.830**, identical to published `0.3.0b6`. On the main benchmark, mean recall is **0.900** across 10 scenarios, with **1** stale-leak total and a **0.000** mean distractor rate.
+- **Latency:** with 50,000 facts in one session, a warm query measured **201 ms median / 485 ms p95**; the first query after a restart builds the index in **1.89 s**. At 1,000 facts: 4.1 ms median; at 5,000: 13.3 ms median. Published `0.3.0b6` measured 136 ms median at 50,000 in the same harness; repeat runs varied 109-201 ms across both versions, so treat them as comparable, not as a speedup.
+- **Concurrency:** `tests/test_gateway.py` drives 200 concurrent requests; a separate run of the real `cyrrus serve` command served **50 of 50** concurrent requests with `requests=50, injected=50, fail_open=0`.
+- **Compatibility:** CI runs Python 3.9-3.13 on Ubuntu 24.04. The built 0.3.0 wheel was also smoke-tested on Windows Python 3.9 and 3.13 and in `python:3.11-slim`.
 
-Numbers come from the benchmark methodology in `devtools/bench` in the source repository (not included in the PyPI package), which measures which facts get injected, not answer quality. It is written by the same team as cyrrus, so treat comparisons with that in mind.
+These numbers come from `devtools/bench` in the source repository (not included in the PyPI package). It measures which facts get injected, **not answer quality**, and is written by the same team as cyrrus, so treat comparisons with that bias in mind.
 
 ## Known limitations
 
-- **Paraphrases:** retrieval is lexical (BM25). "Where do I live?" will not find "I moved to Porto" unless words overlap. Optional embeddings help; this is not yet benchmarked.
+- **Paraphrases:** default retrieval is lexical (BM25). "Where do I live?" will not find "I moved to Porto" unless words overlap. The optional embedding retriever helps but is experimental and is not included in the numbers above.
 - **Corrections under a different key:** "I no longer like pizza" does not retire an older fact stored under another key.
 - **Topic switches:** old-topic facts can come back when words overlap. There is no topic expiry yet.
 - **Precision:** with many look-alike facts, cyrrus finds the right one but also injects some similar noise.
-- **First request after a restart** builds the search index for that session, which can take seconds for very large sessions (about 4.1 s at 50,000 facts).
-- **Windows shutdown:** On Windows, closing the console window or killing the process does not drain pending turns; use Ctrl+C.
+- **First request after a restart** builds the search index for that session: 1.9 s at 50,000 facts on the test desktop, and longer for bigger sessions.
+- **Gateway token strength:** `gateway.api_key_env` only checks that the incoming bearer token matches; it does **not** enforce a minimum length, and the gateway speaks plain HTTP. Use a long random token, for example `python -c "import secrets; print(secrets.token_urlsafe(32))"`, and terminate TLS in a reverse proxy for anything non-local.
+- **Windows shutdown:** closing the console window or killing the process does not drain pending turns; use Ctrl+C.
 - **Not yet tested:** macOS, and Windows under file-replacement load.
 
 ---
 
 ## Install
 
-```bash
-pip install --pre cyrrus                   # core, zero dependencies
-pip install --pre "cyrrus[embeddings]"     # + semantic routing and memory
+Pick one of three routes.
+
+**1. One-line installer** (uses `uv`, no admin rights, no Python knowledge):
+
+```powershell
+irm https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.ps1 | iex
 ```
 
-Python 3.9 to 3.13 are tested in CI.
+```sh
+curl -fsSL https://raw.githubusercontent.com/kikusuka/cyrrus/main/cyrrus/scripts/install.sh | sh
+```
+
+Pin an exact version with `-Version 0.3.0` (PowerShell) or `sh -s -- 0.3.0`. Open a new terminal afterwards and run `cyrrus setup`.
+
+**2. pip** (existing Python 3.9-3.13):
+
+```bash
+python -m pip install cyrrus                 # core, zero dependencies
+python -m pip install "cyrrus[embeddings]"   # + optional semantic retrieval
+python -m cyrrus --version
+```
+
+**3. Standalone binary** (no Python): download the archive for your OS and CPU from the [latest release](https://github.com/kikusuka/cyrrus/releases/latest). The stable asset names are `cyrrus-windows-x64.zip`, `cyrrus-windows-arm64.zip`, `cyrrus-macos-arm64.tar.gz`, `cyrrus-macos-x64.tar.gz`, `cyrrus-linux-x64.tar.gz` and `cyrrus-linux-arm64.tar.gz`.
+
+Docker: `ghcr.io/kikusuka/cyrrus:0.3.0` (see `docs/INSTALL.md`).
 
 The import is always:
+
 ```python
 from cyrrus import Projector
 ```
+
+`docs/INSTALL.md` has checksums, version pinning, Docker, Termux/32-bit Raspberry Pi, Gatekeeper/SmartScreen and uninstall notes. Commands there were either run locally or marked **NOT RUN**.
 
 ---
 
@@ -310,20 +334,84 @@ asyncio.run(client.start(os.environ["DISCORD_TOKEN"]))
 
 ---
 
-## Tracing
+## Seeing what cyrrus did
 
-Every call stores a trace:
+Every call stores a trace on the projector:
 
 ```python
 await bot.process("write a script", session_id="u1")
 
 trace = bot.last_trace
 print(trace["routed_slide_ids"])        # which slides matched
-print(trace["memory_slide_ids"])        # which facts were retrieved  
-print(trace["dropped_slide_ids"])       # what didn't fit the budget
-print(trace["messages"])                # exact messages sent to LLM
+print(trace["memory_slide_ids"])        # which facts were injected
+print(trace["dropped_slide_ids"])       # what did not fit, with reasons
+print(trace["candidates"])              # fact and slide candidates with include/drop reasons
+print(trace["messages"])                # exact messages sent to the LLM
 print(trace["stats"]["history_turns"])  # how many turns of history
 ```
+
+`last_trace` is local to your process and can contain the system message and fact
+values; fact values appear only when `memory.trace_values` is true (default
+false).
+
+For the gateway, `GET /cyrrus/last` returns the last 50 decisions: session,
+routed and ghost slides, fact **keys** and scores, candidates with include/drop
+reasons, retrieval stats and timing. It does **not** include prompt text or fact
+values by default. `cyrrus serve --log-prompts` adds the rendered context for
+debugging. Verified on the built wheel: after 50 concurrent requests,
+`/cyrrus/last` contained neither the request text nor a seeded fact value.
+
+## Plugins
+
+Three slots can be replaced: `retriever`, `packer` and `backend`. Built-ins are
+`bm25` (the default), `hybrid`, `token_knapsack` and `sqlite`. Select a plugin in
+`cyrrus.config.json`:
+
+```json
+{
+  "plugins": {
+    "retriever": "hybrid",
+    "packer": null,
+    "backend": null
+  }
+}
+```
+
+or pass it to the constructor with `Projector(..., plugins={"packer": "my_packer"})`.
+Third-party plugins are discovered through the `cyrrus.plugins` entry-point
+group; an entry point may be an object, a class or a factory accepting a config
+mapping. Selection is lazy: with the default config no entry points are scanned
+and no third-party code is imported. An unknown selected name raises
+`LookupError` listing the available names. Plugin code runs in your process when
+selected, so review a plugin before installing it.
+
+## Experimental embedding retriever
+
+Default retrieval is keyword BM25 and needs no extras. To add semantic matches,
+install the optional packages and give the memory vault an embedder or model:
+
+```bash
+python -m pip install "cyrrus[embeddings]"
+```
+
+```python
+from cyrrus import MemoryVault, Projector
+
+memory = MemoryVault(embedding_model="BAAI/bge-small-en-v1.5")
+bot = Projector(config, llm_call=my_llm, memory=memory)
+```
+
+Keyword matches stay first; embedding-only facts are added when cosine
+similarity is at least `embedding_min_score`, de-duplicated and capped at the
+fact limit. If the model cannot load or an embedding call fails, retrieval logs
+one warning and falls back to keywords. Verified with a deterministic fake
+embedder: a query sharing no words with the stored fact ("which municipality am
+I based in") injected "I live in Porto" through the embedding path only.
+
+This path is opt-in, experimental, not used for the published quality/latency
+numbers, and the recommended model is English. The first use downloads model
+weights. `memory.embedding_min_score` is 0.7 in the shipped config defaults;
+direct `MemoryVault`/`Projector` construction defaults to 0.68.
 
 ---
 

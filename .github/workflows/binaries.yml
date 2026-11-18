@@ -281,12 +281,43 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Create stable alias names
+        shell: bash
+        run: |
+          # /releases/latest/download/<name> requires a file name that never
+          # changes. Keep the versioned asset for pinning and upload an
+          # identical copy under the stable alias.
+          cd release-assets
+          VERSION="${CYRRUS_VERSION#v}"
+          for suffix in \
+            windows-x64.zip windows-arm64.zip \
+            macos-arm64.tar.gz macos-x64.tar.gz \
+            linux-x64.tar.gz linux-arm64.tar.gz
+          do
+            src="cyrrus-${VERSION}-${suffix}"
+            test -f "$src" || { echo "missing release asset: $src" >&2; exit 1; }
+            cp "$src" "cyrrus-${suffix}"
+          done
+          ls -l cyrrus-*
+
       - name: Merge and verify SHA256SUMS
         shell: bash
         run: |
           cd release-assets
+          VERSION="${CYRRUS_VERSION#v}"
           cat checksum-*.txt | sort -k2 > SHA256SUMS
+          # The aliases are byte copies, so they hash the same as the
+          # versioned files, but both names must be listed.
+          for suffix in \
+            windows-x64.zip windows-arm64.zip \
+            macos-arm64.tar.gz macos-x64.tar.gz \
+            linux-x64.tar.gz linux-arm64.tar.gz
+          do
+            digest="$(sha256sum "cyrrus-${suffix}" | awk '{print $1}')"
+            printf '%s  %s\n' "$digest" "cyrrus-${suffix}" >> SHA256SUMS
+          done
           rm checksum-*.txt
+          sort -k2 -o SHA256SUMS SHA256SUMS
           cat SHA256SUMS
           sha256sum -c SHA256SUMS
 
