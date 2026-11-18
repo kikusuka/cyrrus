@@ -33,7 +33,7 @@ jobs:
       # The Dockerfile installs cyrrus==${CYRRUS_VERSION} from PyPI.  0.3.0b6
       # is the current published pre-release and is used for all PR builds.
       - name: Build both architectures without pushing
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -90,7 +90,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push both architectures
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
