@@ -60,7 +60,8 @@ The LLM receives clean, relevant context. Not a wall of everything you've ever d
 ## What's measured
 
 - **Zero required dependencies.** The core is standard-library only. Extras (`cyrrus[embeddings]`, `cyrrus[facts-onnx]`, `cyrrus[facts-torch]`) are optional.
-- **Retrieval quality:** on the holdout scenarios (never used to pick defaults) mean injection recall is **0.830**, identical to published `0.3.0b6`. On the main benchmark, mean recall is **0.900** across 10 scenarios, with **1** stale-leak total and a **0.000** mean distractor rate.
+- **Fewer tokens at the same recall:** on the 20-query holdout set, injected tokens fell from **359** in published `0.3.0b6` to **192** in this build (**46.5% fewer**), while mean injection recall stayed at **0.830** for both. The holdout set was written by the project's authors and was used while tuning, so it is a regression check, not independent evidence.
+- **Retrieval quality:** on the holdout scenarios mean injection recall is **0.830**, identical to published `0.3.0b6`. On the main benchmark, mean recall is **0.900** across 10 scenarios, with **1** stale-leak total and a **0.000** mean distractor rate.
 - **Latency:** with 50,000 facts in one session, a warm query measured **201 ms median / 485 ms p95**; the first query after a restart builds the index in **1.89 s**. At 1,000 facts: 4.1 ms median; at 5,000: 13.3 ms median. Published `0.3.0b6` measured 136 ms median at 50,000 in the same harness; repeat runs varied 109-201 ms across both versions, so treat them as comparable, not as a speedup.
 - **Concurrency:** `tests/test_gateway.py` drives 200 concurrent requests; a separate run of the real `cyrrus serve` command served **50 of 50** concurrent requests with `requests=50, injected=50, fail_open=0`.
 - **Compatibility:** CI runs Python 3.9-3.13 on Ubuntu 24.04. The built 0.3.0 wheel was also smoke-tested on Windows Python 3.9 and 3.13 and in `python:3.11-slim`.
@@ -77,6 +78,8 @@ These numbers come from `devtools/bench` in the source repository (not included 
 - **Gateway token strength:** `gateway.api_key_env` only checks that the incoming bearer token matches; it does **not** enforce a minimum length, and the gateway speaks plain HTTP. Use a long random token, for example `python -c "import secrets; print(secrets.token_urlsafe(32))"`, and terminate TLS in a reverse proxy for anything non-local.
 - **Windows shutdown:** closing the console window or killing the process does not drain pending turns; use Ctrl+C.
 - **Not yet tested:** macOS, and Windows under file-replacement load.
+- **Generic questions such as 'tell me about myself' inject nothing**, because no stored fact matches the words.
+- **Selective injection can drop a relevant fact that scores below half of the best one.** Inspect `/cyrrus/last` to see what was dropped, or lower `memory.min_relative_score`.
 
 ---
 
@@ -404,7 +407,9 @@ bot = Projector(config, llm_call=my_llm, memory=memory)
 Keyword matches stay first; embedding-only facts are added when cosine
 similarity is at least `embedding_min_score`, de-duplicated and capped at the
 fact limit. If the model cannot load or an embedding call fails, retrieval logs
-one warning and falls back to keywords. Verified with a deterministic fake
+one warning and falls back to keywords. **The text of your stored facts is sent
+to the embeddings endpoint you configure. Use a local endpoint such as Ollama
+for private data.** Verified with a deterministic fake
 embedder: a query sharing no words with the stored fact ("which municipality am
 I based in") injected "I live in Porto" through the embedding path only.
 
