@@ -14,6 +14,8 @@ pre-releases are rolled up here; the notable changes are below.
 - Python 3.9: asyncio locks are created lazily, so `Projector` can be built outside a running event loop.
 
 ### Added
+- **Gateway access control:** when `gateway.api_key_env` names an environment variable holding a key, every route except `/health` requires `Authorization: Bearer <key>`, checked in constant time; binding to a non-loopback host without a usable key refuses to start.
+- **Experimental embedding retriever (off by default):** enable with `embedding_model=` or `embedder=`; it falls back to keyword retrieval on any error. The text of your stored facts is sent to the embeddings endpoint you configure.
 - `cyrrus serve`: a local OpenAI-compatible gateway with `inject`/`manage` modes, session and skip headers, fail-open behavior, `/cyrrus/status`, and `/cyrrus/last` decision traces without prompt text or fact values by default.
 - `cyrrus setup`, `cyrrus home`, `cyrrus doctor`, and memory/session/config CLI commands.
 - `process_sync()`, `flush_sync()` and `close_sync()` for scripts without an async loop.
@@ -26,6 +28,7 @@ pre-releases are rolled up here; the notable changes are below.
 ### Changed
 - The default database is now a per-user data directory. Set `memory_db_path` or `CYRRUS_DB_PATH` to keep the old location.
 - `max_facts_per_session` defaults to unlimited (previously 500); fact values are accepted up to 2000 characters.
+- **Selective injection:** only memory facts that score at least `memory.min_relative_score` (default 0.5) times the best score are injected; the best fact is always kept, so fewer facts reach the model than before. On the 20-query holdout set this cut injected tokens from 359 to 192 (46.5% fewer) at the same mean recall (0.830). Setting it to 0 restores the old fill-the-cap behavior.
 - Semantic retrieval is opt-in. The default is keyword BM25; `cyrrus[embeddings]` adds fastembed and numpy. `embedding_min_score` controls the cosine threshold.
 - Installers no longer pass `--prerelease` by default. Set `CYRRUS_PRERELEASE=1` only to install a pre-release that PyPI does not select automatically.
 - Equal-score retrieval ties break by fact key instead of recency, so rankings are deterministic.
