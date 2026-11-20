@@ -138,11 +138,12 @@ def build_demo_db(db_path: str | Path = DB_PATH) -> Path:
         conn = sqlite3.connect(str(db_path))
         try:
             count = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-            if count >= 10:  # already seeded
-                conn.close()
-                return db_path
         except Exception:
-            pass
+            count = 0
+        finally:
+            conn.close()
+        if count >= 9:  # already seeded (3 + 3 + 2 facts + 1 superseded)
+            return db_path
         db_path.unlink(missing_ok=True)
 
     conn = _init_db(db_path)

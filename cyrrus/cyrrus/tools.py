@@ -579,6 +579,50 @@ def memory_list(
         }
 
 
+def memory_add(
+    session: str = "default",
+    key: Optional[str] = None,
+    value: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Add or update one fact in a session.
+
+    Args:
+        session: Session identifier.
+        key: Fact keyword.
+        value: Fact value.
+        db_path: Path to database file. If None, uses config or default.
+
+    Returns:
+        Dict with keys: success, key, value, session, error.
+    """
+    try:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("fact key cannot be empty")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("fact value cannot be empty")
+        validate_session_id(session)
+        validate_keyword(key)
+        vault = _get_memory_vault(db_path)
+        tokens = max(1, len(value.split()))
+        _run_async(vault.upsert(session, key.strip(), value.strip(), tokens))
+        return {
+            "success": True,
+            "key": key.strip(),
+            "value": value.strip(),
+            "session": session,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "key": key or "",
+            "value": value or "",
+            "session": session,
+            "error": str(e),
+        }
+
+
 def memory_search(
     session: str = "default",
     query: Optional[str] = None,
