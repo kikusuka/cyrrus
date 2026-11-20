@@ -79,8 +79,12 @@ async def _run(app, size, keys, use_pyte):
     try:
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             for key in keys:
                 await pilot.press(key)
+                await pilot.pause()
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             if use_pyte:
                 return app._driver.plain()
