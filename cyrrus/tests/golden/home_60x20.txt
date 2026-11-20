@@ -1,0 +1,20 @@
+cyrrus · by Breezy Labs                                     
+ Sessions  Overview                                         
+╸━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭──────────────────────────────────────────────────────────╮
+│                                                          │
+│  Sessions                                                │
+│    work          0 active  █▒░                           │
+│    personal      0 active  █▓▒                           │
+│    scratch       0 active  █▓░                           │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯
+q Quit  ? Help  o Add  n New  c Clone  del Remove  / Search 
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            

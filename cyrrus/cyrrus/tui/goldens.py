@@ -18,9 +18,10 @@ from . import harness, theme, widgets
 
 
 SIZES: Tuple[Tuple[int, int], ...] = ((80, 24), (120, 30), (60, 20))
-SCENES = ("gallery", "toast", "confirm", "form", "help")
+SCENES: Tuple[str, ...] = ("gallery", "toast", "confirm", "form", "help", "home", "session")
 
 
+# Original GalleryApp class from before the refactoring
 class GalleryApp(App):
     CSS = theme.theme_css() + widgets.SCROLLBAR_CSS + """
     Screen { layout: vertical; overflow: hidden; }
@@ -50,7 +51,9 @@ class GalleryApp(App):
             ),
             id="gallery-top",
         )
-        yield widgets.TabBar(["Overview", "Facts", "Trace", "History", "Settings"])
+        from . import widgets as _w
+
+        yield _w.TabBar(["Overview", "Facts", "Trace", "History", "Settings"])
         with widgets.Panel("SESSIONS", id="gallery-panel"):
             yield widgets.MonoTable(id="gallery-table")
         yield widgets.KeyHints(widgets.HOME_HINTS)
@@ -91,18 +94,28 @@ class GalleryApp(App):
             self.push_screen(widgets.HelpOverlay())
 
 
-def cases() -> Iterable[Tuple[str, int, int]]:
-    for scene in SCENES:
-        for width, height in SIZES:
-            yield scene, width, height
+def render_case(scene: str, size: Tuple[int, int]) -> str:
+    """Render a golden frame case, supporting all scenes."""
+    from .home import HomeApp  # type: ignore
+    from .session import SessionApp  # type: ignore
+
+    if scene == "home":
+        return harness.normalise_frame(harness.render_screen(HomeApp(), size), size[0])
+    elif scene == "session":
+        return harness.normalise_frame(harness.render_screen(SessionApp(), size), size[0])
+    else:
+        # Original rendering for the 5 base scenes
+        return harness.normalise_frame(harness.render_screen(GalleryApp(scene), size), size[0])
 
 
 def golden_name(scene: str, width: int, height: int) -> str:
     return "%s_%dx%d.txt" % (scene, width, height)
 
 
-def render_case(scene: str, size: Tuple[int, int]) -> str:
-    return harness.render_screen(GalleryApp(scene), size)
+def cases() -> Iterable[Tuple[str, int, int]]:
+    for scene in SCENES:
+        for width, height in SIZES:
+            yield scene, width, height
 
 
 def main(argv: List[str] = None) -> int:
@@ -137,5 +150,3 @@ def main(argv: List[str] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

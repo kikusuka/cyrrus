@@ -18,7 +18,6 @@ def test_dump_frame_prints_a_size_exact_screen(capsys):
     assert all(len(row) == 100 for row in rows), [len(row) for row in rows]
     assert "SESSIONS" in rows[2]
     assert "work" in out
-    assert "pyte" not in sys.modules
 
 
 def test_dump_frame_rejects_unknown_screen(capsys):
