@@ -1,0 +1,20 @@
+cyrrus · Session View                                       
+ Overview  Facts  Trace  History  Settings                  
+╸━━━━━━━━╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭──────────────────────────────────────────────────────────╮
+│                                                          │
+│  Overview Tab                                            │
+│  Select a session from the Sessions screen to see        │
+│  details.                                                │
+│                                                          │
+│  This overview shows high-level metrics about the        │
+│  current session:                                        │
+│  - Fact count and recency                                │
+│  - Search and filtering                                  │
+│  - Recent activity indicators                            │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯
+q Quit  ? Help  1-5 Tabs  esc Lobby  r Refresh  / Search    
+                                                            
+                                                            
+                                                            

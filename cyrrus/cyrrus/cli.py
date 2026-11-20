@@ -595,6 +595,23 @@ def cmd_home(args) -> None:
         ui.write("Use `cyrrus %s` to continue." % choice)
 
 
+def cmd_ui(args) -> None:
+    """Open the optional Textual interface."""
+    from .tui import INSTALL_HINT, UiUnavailable, run
+    argv = []
+    dump = getattr(args, "dump_frame", None)
+    if dump:
+        argv = ["--dump-frame", dump, "--size", getattr(args, "size", None) or "80x24"]
+    if getattr(args, "demo", False):
+        argv.append("--demo")
+    try:
+        raise SystemExit(run(argv))
+    except UiUnavailable:
+        print("The cyrrus UI requires the optional 'ui' extra.", file=sys.stderr)
+        print("Install it with: " + INSTALL_HINT, file=sys.stderr)
+        raise SystemExit(1)
+
+
 def cmd_logs(args) -> None:
     """Print the last traces from a running gateway's /cyrrus/last."""
     import urllib.request
@@ -846,6 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
     # home command
     home_cmd = commands.add_parser("home", parents=[json_parent], help="show the compact home menu")
 
+    # Optional Textual interface.  --dump-frame is a test/binary hook.
+    ui_cmd = commands.add_parser("ui", parents=[json_parent], help="open the interactive terminal UI")
+    ui_cmd.add_argument("--dump-frame", metavar="SCREEN", default=None, help=argparse.SUPPRESS)
+    ui_cmd.add_argument("--size", default="80x24", metavar="WxH", help=argparse.SUPPRESS)
+    ui_cmd.add_argument("--demo", default=False, action="store_true", help=argparse.SUPPRESS)
+
     # logs command
     logs_cmd = commands.add_parser("logs", parents=[json_parent], help="print the last traces from a running gateway")
 
@@ -914,6 +937,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_setup(args)
     elif args.command == "home":
         cmd_home(args)
+    elif args.command == "ui":
+        cmd_ui(args)
     elif args.command == "logs":
         cmd_logs(args)
     else:
