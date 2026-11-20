@@ -22,6 +22,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     screen = None
     size = "80x24"
+    demo = False
     index = 0
     while index < len(args):
         if args[index] == "--dump-frame" and index + 1 < len(args):
@@ -30,6 +31,9 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         elif args[index] == "--size" and index + 1 < len(args):
             size = args[index + 1]
             index += 2
+        elif args[index] == "--demo":
+            demo = True
+            index += 1
         else:
             index += 1
 
@@ -48,7 +52,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     from .app import run_ui
 
-    return run_ui(args)
+    return run_ui(args, demo=demo)
 
 
 __all__ = ["INSTALL_HINT", "UiUnavailable", "run"]

@@ -591,6 +591,8 @@ def cmd_ui(args) -> None:
     dump = getattr(args, "dump_frame", None)
     if dump:
         argv = ["--dump-frame", dump, "--size", getattr(args, "size", None) or "80x24"]
+    if getattr(args, "demo", False):
+        argv.append("--demo")
     try:
         raise SystemExit(run(argv))
     except UiUnavailable:
@@ -854,6 +856,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui_cmd = commands.add_parser("ui", parents=[json_parent], help="open the interactive terminal UI")
     ui_cmd.add_argument("--dump-frame", metavar="SCREEN", default=None, help=argparse.SUPPRESS)
     ui_cmd.add_argument("--size", default="80x24", metavar="WxH", help=argparse.SUPPRESS)
+    ui_cmd.add_argument("--demo", default=False, action="store_true", help=argparse.SUPPRESS)
 
     # logs command
     logs_cmd = commands.add_parser("logs", parents=[json_parent], help="print the last traces from a running gateway")
